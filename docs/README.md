@@ -70,6 +70,7 @@ Add a new market by supplying:
 * a currency entry in the FX table
 
 The architecture is intentionally simple so future contributors, students, or researchers can extend it easily.
+You can read how to add a new market in docs/ADDING_MARKETS.md.
 
 ---
 
