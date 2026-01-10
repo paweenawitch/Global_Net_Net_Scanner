@@ -2,7 +2,7 @@
 
 A multidisciplinary project rooted in the tradition of Benjamin Graham and the rationalism of Graham-and-Doddsville.
 
-This is a fully automated global NCAV (Net Current Asset Value) scanner covering the U.S., Japan, and Hong Kong. I built it because manually searching for net-nets across markets was slow, fragmented, and error-prone. I wanted a transparent and reproducible system — something I wish I had when I first started studying deep-value investing.
+This is a fully automated global NCAV (Net Current Asset Value) scanner covering the U.S., Japan, Hong Kong, and Thailand. I built it because manually searching for net-nets across markets was slow, fragmented, and error-prone. I wanted a transparent and reproducible system — something I wish I had when I first started studying deep-value investing.
 
 It is open-source by design. If this helps even one investor, researcher, or student the way it helps me, that is enough. Graham democratized value investing and gave ordinary people a framework for moderate prosperity. This project is simply a continuation of that spirit.
 
