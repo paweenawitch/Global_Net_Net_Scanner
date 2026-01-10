@@ -9,6 +9,7 @@ from infrastructure.repositories.csv_universe_writer_repository import CsvUniver
 from infrastructure.sources.us_sec_source import USSecSource
 from infrastructure.sources.jp_jpx_source import JPJpxSource
 from infrastructure.sources.hk_hkex_source import HKHKEXSource
+from infrastructure.sources.th_set_source import THSetSource
 
 def _find_repo_root(start: Path) -> Path:
     """
@@ -47,6 +48,7 @@ def main() -> None:
         USSecSource(project_root),
         JPJpxSource(project_root),
         HKHKEXSource(project_root),
+        THSetSource(project_root),
     ]
     svc = BuildUniverseService(sources=sources, repo=repo)
     result = svc.run()

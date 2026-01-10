@@ -14,9 +14,8 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     # lightweight coercions
     if "ticker_base" in out.columns:
-        out["ticker_base"] = (
-            out["ticker_base"].astype(str).str.extract(r"([A-Za-z0-9]{1,10})")[0]
-        )
+        out["ticker_base"] = out["ticker_base"].astype(str).str.strip().str.upper()
+
     # Ensure presence
     for c in want:
         if c not in out.columns:
@@ -49,6 +48,7 @@ class BuildUniverseService(UniverseBuilder):
                 "rows": int(len(df)),
             }
             self.repo.write_market(src.market_code, df, meta)
+            print(f"✅ {src.market_code}: {len(df)} rows")
             prov[src.market_code] = meta
             if not df.empty:
                 frames.append(df)

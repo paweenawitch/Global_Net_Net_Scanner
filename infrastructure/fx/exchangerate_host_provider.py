@@ -89,8 +89,8 @@ class ExchangerateHostFxProvider(FxProvider):
                 # crude hard-coded fallbacks if HTTP fails
                 raw = {
                     "USD": 1.0,
-                    "JPY": 150.0,
+                    "JPY": 155.0,
                     "HKD": 7.8,
-                    "CNY": 7.2,
+                    "CNY": 7,
                 }
         return self._normalize_ccy_to_usd(raw)

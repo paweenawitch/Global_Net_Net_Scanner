@@ -26,6 +26,8 @@ def _target_currency(house_ticker: str) -> str:
         return "HKD"
     if house_ticker.endswith(".JP"):
         return "JPY"
+    if house_ticker.endswith(".TH"):
+        return "THB"
     return "USD"
 
 
