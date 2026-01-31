@@ -20,10 +20,9 @@ class THSetSource:
                 raise FileNotFoundError(f"Missing Thailand builder script: {tool}")
 
             try:
-                # Ensure the builder runs as __main__
+                # Always rebuild Thailand universe
                 runpy.run_path(str(tool), run_name="__main__")
             except Exception as e:
-                # If the builder crashed, tell the user exactly that
                 raise RuntimeError(
                     f"Thailand builder crashed: {tool}\n"
                     f"Underlying error: {type(e).__name__}: {e}\n"
