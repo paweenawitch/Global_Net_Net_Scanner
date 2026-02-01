@@ -1,4 +1,4 @@
-#tools/non_us_fetch_companyfact.py
+# tools/non_us_fetch_companyfact.py
 from __future__ import annotations
 """
 Non-US Companyfacts Fetcher (Step 2 – Yahoo path)
@@ -6,13 +6,20 @@ Non-US Companyfacts Fetcher (Step 2 – Yahoo path)
 - Reads data/ncav_shortlist.csv; uses 'y_symbol' for Yahoo/yfinance (e.g., 1420.JP -> 1420.T)
 - Skips .US tickers entirely
 - Token-bucket pacing across Yahoo JSON/HTML and yfinance properties
-- Insider % fallback: query2 (with referer/region/lang) -> yfinance.major_holders DF -> holders HTML bootstrap
-- Shares outstanding:
-    * Pull **full time series** via Yahoo fundamentals-timeseries (query2)
+
+INSIDERS NOTE (IMPORTANT):
+- We keep writing the SAME insider JSON output schema to cache/sec_insider/{TICKER}.json
+  for downstream screening-engine consistency.
+- But we DO NOT fetch insider data here anymore (disabled), because Yahoo/yfinance
+  endpoints are inconsistent/throttled and yfinance no longer reliably exposes insiders.
+
+Shares outstanding:
+    * Pull full time series via Yahoo fundamentals-timeseries (query2)
     * Fallback to yfinance.get_shares_full()/get_shares()
-    * Map shares to **EVERY** period (nearest match with smart window) to detect dilution
+    * Map shares to EVERY period (nearest match with smart window) to detect dilution
     * Fallback to .info.sharesOutstanding only if no series points exist
-- Outputs:
+
+Outputs:
     cache/sec_core/{TICKER}_core.json
     cache/sec_insider/{TICKER}.json
 """
@@ -588,13 +595,16 @@ def yf_build_core(y_symbol: str, original_ticker: str) -> Dict[str, Any]:
     }
 
 # -----------------------------------------------------------------------------
-# Insider % resolver (query2 + referer) with DF + HTML fallbacks
+# Insider helpers (kept for compatibility, but insider fetching is disabled)
 # -----------------------------------------------------------------------------
 
 def _yahoo_quote_summary(y_symbol: str, modules: List[str]) -> dict:
     """
     Yahoo quoteSummary via query2 with region/lang/corsDomain and realistic referer.
     Still paced + backoff; 401/404 => {}.
+
+    NOTE: kept because other optional routines may reuse it, but the insider writer
+    is now schema-only and does not call this.
     """
     _pace(_JSON_BUCKET, YF_RPS_JSON)
     url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{y_symbol}"
@@ -636,37 +646,18 @@ def _yahoo_quote_summary(y_symbol: str, modules: List[str]) -> dict:
 
 
 def _extract_percent_from_df(df) -> Optional[float]:
-    try:
-        if df is None or df.empty:
-            return None
-        # scan a few rows for "insider" and a percentage
-        for i in range(min(len(df), 6)):
-            row = df.iloc[i]
-            text = " ".join(str(x) for x in (row.values if hasattr(row, "values") else [row]))
-            if "insider" in text.lower():
-                m = re.search(r"([0-9]+(?:\\.[0-9]+)?)\\s*%", text)
-                if m:
-                    return float(m.group(1)) / 100.0
-        # fallback by columns
-        for col in df.columns:
-            ser = df[col].astype(str).str.lower()
-            hits = ser[ser.str.contains("insider")]
-            if not hits.empty:
-                idx = hits.index[0]
-                row = df.loc[idx]
-                s = " ".join(str(x) for x in getattr(row, "values", [row]))
-                m = re.search(r"([0-9]+(?:\\.[0-9]+)?)\\s*%", s)
-                if m:
-                    return float(m.group(1)) / 100.0
-    except Exception:
-        pass
+    """
+    DEPRECATED: do not use yfinance major_holders for insider-held %.
+    yfinance no longer reliably exposes it (often blocked / empty).
+    """
     return None
-
 
 def _yahoo_holders_html(y_symbol: str) -> Optional[str]:
     """
     Fetch the holders page with a realistic referer and accept headers.
     We only accept pages that contain the root.App.main JSON bootstrap.
+
+    NOTE: kept for compatibility; not used by the disabled insider writer.
     """
     _pace(_JSON_BUCKET, YF_RPS_JSON)
     url = f"https://finance.yahoo.com/quote/{y_symbol}/holders"
@@ -692,6 +683,8 @@ def _extract_percent_from_html(html: str) -> Optional[float]:
     """
     Parse insidersPercentHeld from the root.App.main JSON bootstrap.
     Fallback to a %-literal near 'Insider' if the JSON path is missing.
+
+    NOTE: kept for compatibility; not used by the disabled insider writer.
     """
     try:
         m = re.search(r"root\\.App\\.main\\s*=\\s*(\{.*?\})\\s*;\\s*\\n", html, re.DOTALL)
@@ -713,6 +706,9 @@ def _extract_percent_from_html(html: str) -> Optional[float]:
 
 
 def resolve_insiders_percent_held(y_symbol: str) -> Tuple[Optional[float], Optional[str]]:
+    """
+    Kept for compatibility; not used by the disabled insider writer.
+    """
     # 1) query2 JSON
     store = _yahoo_quote_summary(y_symbol, ["majorHoldersBreakdown", "insiderHolders"])
     try:
@@ -722,17 +718,7 @@ def resolve_insiders_percent_held(y_symbol: str) -> Tuple[Optional[float], Optio
             return float(node["raw"]), "quoteSummary"
     except Exception:
         pass
-    # 2) yfinance DF
-    if yf is not None:
-        try:
-            _pace(_INFO_BUCKET, YF_RPS_INFO)
-            df = yf.Ticker(y_symbol).major_holders
-            pct = _extract_percent_from_df(df)
-            if pct is not None:
-                return pct, "major_holders_df"
-        except Exception:
-            pass
-    # 3) holders HTML
+    # 2) holders HTML
     html = _yahoo_holders_html(y_symbol)
     if html:
         pct = _extract_percent_from_html(html)
@@ -742,49 +728,26 @@ def resolve_insiders_percent_held(y_symbol: str) -> Tuple[Optional[float], Optio
 
 
 def insider_from_yahoo_api(y_symbol: str) -> Dict[str, Any]:
-    store_tx = _yahoo_quote_summary(y_symbol, ["insiderTransactions"])
-    buys = sells = 0
-    bsh = ssh = 0.0
-    try:
-        tx = store_tx.get("insiderTransactions") or []
-        cutoff = pd.Timestamp.utcnow() - pd.Timedelta(days=180)
-        for it in tx:
-            raw = ((it or {}).get("startDate") or {}).get("raw")
-            if raw is None:
-                continue
-            if pd.to_datetime(raw, unit="s") < cutoff:
-                continue
-            sh = float(((it.get("shares") or {}).get("raw")) or 0.0)
-            tt = str(it.get("transactionText") or "").upper()
-            if "PURCHASE" in tt or tt.startswith("P ") or tt == "P":
-                buys += 1; bsh += abs(sh)
-            elif "SALE" in tt or tt.startswith("S ") or tt == "S":
-                sells += 1; ssh += abs(sh)
-    except Exception:
-        pass
-
-    pct, source = resolve_insiders_percent_held(y_symbol)
-    status = "ok" if (buys or sells or bsh or ssh or pct is not None) else "no_data"
-    if status == "no_data":
-        LOGGER.info("[insider] %s no_data (pct=%s, tx_ct=0) — not provided or throttled", y_symbol, pct)
-
-    payload = {
+    """
+    SCHEMA-ONLY STUB:
+    Keep the exact output format for screening-engine consistency,
+    but do NOT fetch insider data (Yahoo/yfinance).
+    """
+    return {
         "as_of": _now_iso(),
-        "buys_count": int(buys),
-        "sells_count": int(sells),
-        "buys_shares": float(bsh),
-        "sells_shares": float(ssh),
-        "net_shares": float(bsh - ssh),
-        "signal": ("InsiderBuy" if (bsh > ssh) else ("InsiderSell" if (ssh > bsh) else "Neutral")),
-        "status": status,
-        "source": "yahoo_api",
-        "insiders_percent_held": pct,
+        "buys_count": 0,
+        "sells_count": 0,
+        "buys_shares": 0.0,
+        "sells_shares": 0.0,
+        "net_shares": 0.0,
+        "signal": "Neutral",
+        "status": "disabled",
+        "status_reason": "insider_fetch_disabled",
+        "source": "disabled",
+        "insiders_percent_held": None,
+        # keep key stable so downstream can rely on it
+        "insiders_percent_held_source": None,
     }
-    if pct is None:
-        payload["status_reason"] = "not_available_or_throttled"
-    if source:
-        payload["insiders_percent_held_source"] = source
-    return payload
 
 # -----------------------------------------------------------------------------
 # Orchestrator
@@ -795,7 +758,7 @@ def write_json(path: Path, obj: Dict[str, Any]) -> None:
     path.write_text(json.dumps(obj, indent=2), encoding="utf-8")
 
 def run_for_row(ticker: str, y_symbol: str, sleep: float = 0.35) -> Dict[str, Any]:
-    """Fetch core & insiders using y_symbol, but write files under original ticker."""
+    """Fetch core using y_symbol, but write files under original ticker. Insider file is schema-only."""
     core_path = CORE_DIR / f"{ticker}_core.json"
     ins_path  = INS_DIR  / f"{ticker}.json"
 

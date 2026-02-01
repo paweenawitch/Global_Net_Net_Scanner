@@ -347,7 +347,7 @@ def build_or_update(house_ticker: str, fetch_timeout: int = 15) -> NcavRecord:
         if prev:
             prev.cached_at = datetime.now(timezone.utc).isoformat(timespec="seconds"); save_cache(prev); return prev
         cur = NcavRecord(house_ticker, to_yahoo(house_ticker), None, "", None, None, None, None, None,
-                         "yahoo", datetime.now(timezoneutc).isoformat(timespec="seconds"), "", None, None, None, "error")
+                         "yahoo", datetime.now(timezone.utc).isoformat(timespec="seconds"), "", None, None, None, "error")
     if prev and prev.statement_sig == cur.statement_sig:
         prev.cached_at = datetime.now(timezone.utc).isoformat(timespec="seconds"); save_cache(prev); return prev
     save_cache(cur); return cur

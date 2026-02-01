@@ -9,6 +9,7 @@ from application.fetch_cache_orchestrator import FetchCacheOrchestrator, FetchCo
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--shortlist", help="Override shortlist CSV path (relative to repo root)")
+
     # backwards-compatible convenience flags
     ap.add_argument("--force-us-core", action="store_true", help="Pass --force to US_CORE job (if supported)")
     ap.add_argument("--us-only", action="store_true", help="Run only US jobs (US_CORE [+ US_INSIDERS])")
@@ -20,6 +21,14 @@ def main() -> None:
     ap.add_argument("--skip", nargs="*", help="Explicit list of job names to skip (e.g. US_INSIDERS)")
 
     ap.add_argument("--verbose", action="store_true")
+
+    # performance controls
+    pg = ap.add_mutually_exclusive_group()
+    pg.add_argument("--parallel", action="store_true", help="Run market jobs in parallel (default)")
+    pg.add_argument("--no-parallel", action="store_true", help="Run market jobs sequentially")
+    ap.add_argument("--max-parallel", type=int, default=0,
+                    help="Max parallel jobs (default: min(8, number of jobs))")
+
     args = ap.parse_args()
 
     cfg = FetchConfig()
@@ -69,6 +78,8 @@ def main() -> None:
         only=only_arg,
         skip=skip_arg,
         extra_args=extra_args_arg,
+        parallel=(not args.no_parallel),  # default: parallel on
+        max_workers=(args.max_parallel if args.max_parallel and args.max_parallel > 0 else None),
     )
 
 

@@ -67,6 +67,7 @@ class BuildShortlistService:
     def run(self, cfg: ShortlistConfig) -> dict:
         t0 = time.time()
         rows: List[dict] = []
+        now = datetime.now(timezone.utc)
 
         # 1) Load universe
         urows = self.universe_repo.load_tickers()
@@ -77,11 +78,30 @@ class BuildShortlistService:
 
         # 2) Fundamentals (concurrent with bounded threads)
         self.log.info(
-            "Fetching fundamentals (prices_only=%s, timeout=%ss, workers=%d)...",
+            "Step 2.1: fundamentals refresh (prices_only=%s, timeout=%ss, workers=%d, min_fs_age_days=%d)...",
             cfg.prices_only,
             cfg.fetch_timeout,
             max(1, int(cfg.max_workers or 1)),
+            cfg.min_fs_age_days,
         )
+
+        def _fs_age_days(fs_date: Optional[str]) -> Optional[int]:
+            if not fs_date:
+                return None
+            try:
+                return (now.date() - pd.to_datetime(fs_date).date()).days
+            except Exception:
+                return None
+
+        def _should_refresh(cached: Optional[dict]) -> bool:
+            if cached is None:
+                return True
+            if cfg.prices_only:
+                return False
+            age_days = _fs_age_days(cached.get("fs_date"))
+            if age_days is None:
+                return True
+            return age_days >= cfg.min_fs_age_days
 
         def _one(h: str) -> dict:
             if cfg.prices_only:
@@ -102,9 +122,18 @@ class BuildShortlistService:
                         "fs_selected_col": None,
                         "note": "no cache",
                     }
+                rec["data_age_days"] = _fs_age_days(rec.get("fs_date"))
                 return rec
+            cached = self.fundamentals_repo.get_cached(h)
+            if _should_refresh(cached):
+                rec = self.fundamentals_repo.get_or_update(h, cfg.fetch_timeout)
             else:
                 return self.fundamentals_repo.get_or_update(h, cfg.fetch_timeout)
+                rec = cached
+                if rec is None:
+                    rec = self.fundamentals_repo.get_or_update(h, cfg.fetch_timeout)
+            rec["data_age_days"] = _fs_age_days(rec.get("fs_date"))
+            return rec
 
         done = 0
         total = len(tickers)
@@ -183,6 +212,18 @@ class BuildShortlistService:
             int(base["within_2y"].sum()),
             int(base["ncav_positive"].sum()),
             int(base["ncavps_pos_target"].sum()),
+        )
+
+        # 5) Prices only for viable
+        need_price_mask = base["within_2y"] & base["ncav_positive"] & base["ncavps_pos_target"]
+        price_symbols = sorted(set(base.loc[need_price_mask, "y_symbol"].dropna().astype(str)))
+        self.log.info("Fetching prices for %d Yahoo symbols (batch=%d)...", len(price_symbols), cfg.prices_batch)
+        # 5) Step 2.2: prices for all tickers, then shortlist
+        price_symbols = sorted(set(base["y_symbol"].dropna().astype(str)))
+        self.log.info(
+            "Step 2.2: fetching prices for %d Yahoo symbols (batch=%d)...",
+            len(price_symbols),
+            cfg.prices_batch,
         )
 
         # 5) Prices only for viable

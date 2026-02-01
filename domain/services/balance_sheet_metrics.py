@@ -92,17 +92,29 @@ def current_ratio(period: Dict[str, Any]) -> Optional[float]:
 
 def de_ratio(period: Dict[str, Any]) -> Optional[float]:
     """
-    total liabilities / (total assets - total liabilities)
-    This is 'Debt-to-Equity' in Graham-ish loose sense.
+    Debt-to-Equity (Graham-style):
+    Prefer explicit equity if available.
+    Fallback to assets_total - liabilities if needed.
     """
-    ta = get_balance_value(period, "assets_total")
     tl = get_balance_value(period, "liab_total")
-    if ta is None or tl is None:
+    if tl is None:
         return None
-    equity = float(ta) - float(tl)
+
+    # 1️⃣ Prefer explicit equity (non-US has this)
+    equity = get_balance_value(period, "equity")
+
+    # 2️⃣ Fallback: derive equity if missing
+    if equity is None:
+        ta = get_balance_value(period, "assets_total")
+        if ta is None:
+            return None
+        equity = float(ta) - float(tl)
+
     if equity == 0:
         return None
-    return float(tl) / equity
+
+    return float(tl) / float(equity)
+
 
 
 def ncav_total_native(period: Dict[str, Any]) -> Optional[float]:

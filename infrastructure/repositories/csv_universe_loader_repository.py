@@ -6,7 +6,6 @@ import pandas as pd
 
 from application.ports import ShortlistUniverseRepository
 
-
 class CsvUniverseLoaderRepository(ShortlistUniverseRepository):
     """
     Reads an existing universe CSV (e.g. data/tickers/global_full.csv)

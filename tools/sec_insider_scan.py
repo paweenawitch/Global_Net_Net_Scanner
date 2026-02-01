@@ -1,8 +1,8 @@
-#tools/sec_insider_scan.py
+# tools/sec_insider_scan.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Insider (Form 4) scanner — shortlist-only, robust XML parsing, holders %
+Insider (Form 4) scanner — shortlist-only, robust XML parsing
 
 • Universe: data/ncav_shortlist.csv (ONLY .US)
 • For each .US ticker, map to CIK via SEC company_tickers.json (cached)
@@ -10,7 +10,7 @@ Insider (Form 4) scanner — shortlist-only, robust XML parsing, holders %
 • For each recent filing, fetch the filing directory index.json and then the
   XML (form4.xml/doc4.xml/etc), parse P/S transactions + share totals
 • Aggregate last N days (default 180) into buys_count/sells_count/shares
-• Add insiders_percent_held via Yahoo QuoteSummary (majorHoldersBreakdown)
+• NO Yahoo fallback (removed). Only SEC EDGAR as available.
 • Output: cache/sec_insider/{TICKER}.json
 
 Run:
@@ -21,7 +21,7 @@ Reqs: pip install requests pandas
 """
 from __future__ import annotations
 import argparse, csv, json, logging, os, re, sys, time, xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -42,7 +42,6 @@ DEFAULT_SLEEP     = 0.2
 SUBMISSIONS_URL       = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 FILING_DIR_INDEX_URL  = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc_nodash}/index.json"
 COMPANY_TICKERS_JSON  = "https://www.sec.gov/files/company_tickers.json"
-YF_QS_URL             = "https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}"
 
 BASE_HEADERS = {
     "User-Agent": SEC_USER_AGENT,
@@ -50,7 +49,6 @@ BASE_HEADERS = {
     "Accept-Encoding": "gzip, deflate",
     "Connection": "keep-alive",
 }
-YF_HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 LOGGER = logging.getLogger("sec_insider_scan")
 
@@ -59,7 +57,7 @@ LOGGER = logging.getLogger("sec_insider_scan")
 # ---------------------------
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00","Z")
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 def ensure_outdir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
@@ -84,7 +82,10 @@ def fetch(sess: requests.Session, url: str, timeout=30, retries=3, backoff=0.8) 
                 return r
             if r is not None and r.status_code in (429, 403, 503) and attempt < retries:
                 sleep = backoff * attempt
-                LOGGER.warning("HTTP %s on %s (attempt %d/%d) — retrying in %.2fs", r.status_code, url, attempt, retries, sleep)
+                LOGGER.warning(
+                    "HTTP %s on %s (attempt %d/%d) — retrying in %.2fs",
+                    r.status_code, url, attempt, retries, sleep
+                )
                 time.sleep(sleep)
                 continue
             if r is not None:
@@ -93,7 +94,10 @@ def fetch(sess: requests.Session, url: str, timeout=30, retries=3, backoff=0.8) 
         except Exception as e:
             if attempt < retries:
                 sleep = backoff * attempt
-                LOGGER.warning("Error %s on %s (attempt %d/%d) — retrying in %.2fs", e, url, attempt, retries, sleep)
+                LOGGER.warning(
+                    "Error %s on %s (attempt %d/%d) — retrying in %.2fs",
+                    e, url, attempt, retries, sleep
+                )
                 time.sleep(sleep)
                 continue
             LOGGER.exception("Error on %s — giving up", url)
@@ -123,7 +127,6 @@ def load_sec_ticker_map(sess: requests.Session, cache_dir: Path) -> Dict[str, in
             out[t] = int(c)
     return out
 
-
 def load_universe_shortlist(path: Path) -> List[str]:
     rows: List[str] = []
     with path.open(encoding="utf-8", newline="") as f:
@@ -135,35 +138,11 @@ def load_universe_shortlist(path: Path) -> List[str]:
     return sorted(set(rows))
 
 # ---------------------------
-# Yahoo holders %
-# ---------------------------
-
-def insiders_percent_held_yahoo(us_ticker: str) -> Optional[float]:
-    try:
-        sym = us_ticker.replace(".US", "")
-        url = YF_QS_URL.format(sym=sym)
-        params = {"modules": "majorHoldersBreakdown"}
-        r = requests.get(url, params=params, headers=YF_HEADERS, timeout=20)
-        if r.status_code != 200:
-            LOGGER.info("Yahoo %s for %s — skipping holders%%", r.status_code, us_ticker)
-            return None
-        js = r.json()
-        store = (js.get("quoteSummary", {}).get("result") or [{}])[0] or {}
-        mh = store.get("majorHoldersBreakdown") or {}
-        node = mh.get("insidersPercentHeld")
-        if isinstance(node, dict) and node.get("raw") is not None:
-            return float(node["raw"])
-    except Exception as e:
-        LOGGER.debug("Holders%% error for %s: %s", us_ticker, e)
-    return None
-
-# ---------------------------
 # Filing helpers
 # ---------------------------
 
 def _accession_nodash(acc: str) -> str:
     return re.sub(r"[^0-9]", "", acc or "")
-
 
 def list_recent_form4(sess: requests.Session, cik: int, days_back: int) -> List[Tuple[str, str]]:
     """Return [(acc_nodash, primaryDocument)] for recent Form 4 within days_back."""
@@ -197,7 +176,6 @@ def list_recent_form4(sess: requests.Session, cik: int, days_back: int) -> List[
             continue
     return out
 
-
 def fetch_filing_dir(sess: requests.Session, cik: int, acc_nodash: str) -> List[str]:
     """List files in the filing directory via index.json."""
     url = FILING_DIR_INDEX_URL.format(cik=cik, acc_nodash=acc_nodash)
@@ -211,14 +189,12 @@ def fetch_filing_dir(sess: requests.Session, cik: int, acc_nodash: str) -> List[
     except Exception:
         return []
 
-
 def pick_form4_xml(files: List[str], primary_hint: str = "") -> Optional[str]:
     cand = []
     for fn in files:
         lower = fn.lower()
         if not lower.endswith(".xml"):
             continue
-        # prefer obvious form4 files
         score = 0
         if "form4" in lower or "doc4" in lower or "f4" in lower:
             score += 5
@@ -232,10 +208,9 @@ def pick_form4_xml(files: List[str], primary_hint: str = "") -> Optional[str]:
     cand.sort(reverse=True)
     return cand[0][1]
 
-
 def fetch_xml(sess: requests.Session, cik: int, acc_nodash: str, filename: str) -> Optional[str]:
-    base = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_nodash}/{filename}"
-    r = fetch(sess, base, timeout=30)
+    url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_nodash}/{filename}"
+    r = fetch(sess, url, timeout=30)
     if not r:
         return None
     try:
@@ -250,7 +225,6 @@ def fetch_xml(sess: requests.Session, cik: int, acc_nodash: str, filename: str) 
 def _local(tag: str) -> str:
     return tag.split("}", 1)[-1] if "}" in tag else tag
 
-
 def _first_text_any(node: ET.Element, name: str) -> Optional[str]:
     n = name.lower()
     for el in node.iter():
@@ -258,12 +232,10 @@ def _first_text_any(node: ET.Element, name: str) -> Optional[str]:
             txt = (el.text or "").strip()
             if txt:
                 return txt
-            # Check nested <value>
             for v in el.iter():
                 if _local(v.tag).lower() == "value" and (v.text or "").strip():
                     return (v.text or "").strip()
     return None
-
 
 def _first_number_any(node: ET.Element, name: str) -> Optional[float]:
     txt = _first_text_any(node, name)
@@ -274,7 +246,6 @@ def _first_number_any(node: ET.Element, name: str) -> Optional[float]:
     except Exception:
         return None
 
-
 def summarize_form4(xml_text: str, allowed_codes: Optional[Set[str]] = None) -> Dict[str, float]:
     buys = sells = 0
     bsh = ssh = 0.0
@@ -283,17 +254,17 @@ def summarize_form4(xml_text: str, allowed_codes: Optional[Set[str]] = None) -> 
     except Exception:
         return {"buys_count": 0, "sells_count": 0, "buys_shares": 0.0, "sells_shares": 0.0, "net_shares": 0.0}
 
-    # Both nonDerivativeTable and derivativeTable can contain transactions
     tx_nodes = [el for el in root.iter() if _local(el.tag).lower().endswith("transaction")]
     for n in tx_nodes:
         code = _first_text_any(n, "transactionCode")
         code = code.strip().upper() if code else None
         if allowed_codes and (not code or code not in allowed_codes):
             continue
+
         price = _first_number_any(n, "transactionPricePerShare")
         if price == 0 and code != "P":
-            # filter out administrative 0-priced entries except P
             continue
+
         sh = _first_number_any(n, "transactionShares") or 0.0
         if code == "P":
             buys += 1; bsh += abs(sh)
@@ -312,9 +283,10 @@ def summarize_form4(xml_text: str, allowed_codes: Optional[Set[str]] = None) -> 
 # Orchestrator per ticker
 # ---------------------------
 
-def process_ticker(sess: requests.Session, ticker_us: str, cik: int, days_back: int, allowed_codes: Set[str]) -> Dict[str, any]:
+def process_ticker(sess: requests.Session, ticker_us: str, cik: int, days_back: int, allowed_codes: Set[str]) -> Dict[str, Any]:
     LOGGER.info("⇒ %s (CIK %d)", ticker_us, cik)
     filings = list_recent_form4(sess, cik, days_back)
+
     buys = sells = 0
     bsh = ssh = 0.0
 
@@ -324,8 +296,7 @@ def process_ticker(sess: requests.Session, ticker_us: str, cik: int, days_back: 
             continue
         pick = pick_form4_xml(files, prim)
         if not pick:
-            # last-resort: any XML
-            xmls = [f for f in files if f.lower().endswith('.xml')]
+            xmls = [f for f in files if f.lower().endswith(".xml")]
             pick = xmls[0] if xmls else None
         if not pick:
             continue
@@ -337,9 +308,13 @@ def process_ticker(sess: requests.Session, ticker_us: str, cik: int, days_back: 
         bsh  += s["buys_shares"]; ssh   += s["sells_shares"]
 
     status = "ok" if (buys or sells or bsh or ssh) else "no_data"
-    signal = "InsiderBuy" if (buys>0 and sells==0) or (bsh>ssh) else ("InsiderSell" if (sells>0 and buys==0) or (ssh>bsh) else "Neutral")
+    signal = (
+        "InsiderBuy" if (buys > 0 and sells == 0) or (bsh > ssh)
+        else ("InsiderSell" if (sells > 0 and buys == 0) or (ssh > bsh) else "Neutral")
+    )
 
-    payload = {
+    # IMPORTANT: keep output schema stable even when holders % is unavailable
+    payload: Dict[str, Any] = {
         "ticker": ticker_us,
         "as_of": now_iso(),
         "buys_count": int(buys),
@@ -350,12 +325,9 @@ def process_ticker(sess: requests.Session, ticker_us: str, cik: int, days_back: 
         "signal": signal,
         "status": status,
         "source": "edgar_form4_xml",
+        "insiders_percent_held": None,  # no Yahoo fallback; SEC doesn't provide a clean direct field here
+        "insiders_percent_held_source": None,
     }
-
-    pct = insiders_percent_held_yahoo(ticker_us)
-    if pct is not None:
-        payload["insiders_percent_held"] = pct
-
     return payload
 
 # ---------------------------
@@ -372,8 +344,10 @@ def main():
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
-    logging.basicConfig(level=(logging.DEBUG if args.verbose else logging.INFO),
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=(logging.DEBUG if args.verbose else logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
 
     out_dir = Path(args.outdir)
     if not out_dir.is_absolute():
@@ -387,10 +361,8 @@ def main():
     else:
         tickers = load_universe_shortlist(Path(args.universe))
 
-    # Build CIK map once
     with sec_session() as sess:
         secmap = load_sec_ticker_map(sess, ROOT / "cache" / "refdata")
-        logs = []
         for t in tickers:
             if not t.endswith(".US"):
                 LOGGER.info("[skip] %s is not .US — skipping in this US insider run", t)
@@ -407,7 +379,6 @@ def main():
                 time.sleep(DEFAULT_SLEEP)
             except Exception:
                 LOGGER.exception("[error] %s failed", t)
-                logs.append({"ticker": t, "status": "error"})
 
 if __name__ == "__main__":
     sys.exit(main())

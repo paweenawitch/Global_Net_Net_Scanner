@@ -18,7 +18,7 @@ The goal is to answer this question:
 
 ### **Capabilities at a Glance**
 
-* Unified global ticker universe (US, JP, HK — extendable to any market)
+* Unified global ticker universe (US, JP, HK, TH — extendable to any market)
 * Fundamentals fetched and cached from Yahoo Finance + SEC EDGAR
 * Full NCAV and price-to-NCAV computation
 * Graham’s 2/3 NCAV margin-of-safety flag
@@ -79,8 +79,8 @@ You can read how to add a new market in docs/ADDING_MARKETS.md.
 **1. Clone**
 
 ```bash
-git clone https://github.com/paweenawitch/global-net-net-scanner.git
-cd global-net-net-scanner
+git clone https://github.com/paweenawitch/global_net_net_scanner.git
+cd global_net_net_scanner
 ```
 
 **2. Install dependencies**
@@ -96,11 +96,29 @@ python -m application.cli.build_universe --root .
 ```
 
 Output: `data/tickers/global_full.csv`
+There'll be a separate country_full.csv file for each region included in the same folder.
 
 **4. Build the NCAV shortlist**
 
+4.1 Update NCAV cache for all tickers
+
 ```bash
-python -m application.cli.main_build_shortlist --tickers_csv data/tickers/global_full.csv
+python -m application.cli.update_ncav_cache --csv data/tickers/global_full.csv
+```
+You can change global_full.csv to any region you desire. This will create NCAV and relevant parameters in cache.
+
+4.2 Update to latest price
+
+```bash
+python -m application.cli.update_prices_cache --csv data/tickers/global_full.csv
+python -m application.cli.update_fx_cache
+```
+Again, you can change global_full.csv to any region you desire. This will create a cache of latest price with FX.
+
+4.3 Build NCAV shortlist from cache
+
+```bash
+python -m application.cli.main_build_shortlist_cache_only --tickers_csv data/tickers/global_full.csv
 ```
 
 Output: `data/tickers/ncav_shortlist.csv`
@@ -116,7 +134,7 @@ Output: 'cache/sec_core/' and 'cache/sec_insider/'
 **6. Run the screening engine**
 
 ```bash
-python tools/screening_engine.py
+python -m tools/screening_engine.py
 ```
 
 Outputs include:

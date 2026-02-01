@@ -2,7 +2,9 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional, Dict, List
+from typing import Iterable, Optional, Dict, List, Tuple
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from infrastructure.runners.python_script_runner import PythonScriptRunner
 from application.market_registry import default_registry
@@ -43,6 +45,8 @@ class FetchCacheOrchestrator:
         only: Iterable[str] | None = None,
         skip: Iterable[str] | None = None,
         extra_args: Optional[Dict[str, List[str]]] = None,
+        parallel: bool = True,
+        max_workers: Optional[int] = None,
     ) -> None:
         """
         Run all (or a filtered subset of) market jobs.
@@ -53,11 +57,15 @@ class FetchCacheOrchestrator:
             skip: optional iterable of job names to skip.
             extra_args: optional mapping of JOB_NAME -> list of extra CLI args
                         (e.g. {"US_CORE": ["--force"]}).
+            parallel: run scripts concurrently (each job is its own subprocess).
+            max_workers: cap concurrency (default: min(8, number_of_jobs_to_run)).
         """
         only_set = {n.upper() for n in only} if only else None
         skip_set = {n.upper() for n in skip} if skip else set()
         extra_args = extra_args or {}
 
+        # Build a concrete run-list first (so we can run sequentially or in parallel)
+        plan: List[Tuple[str, Path, List[str]]] = []
         for job in self.jobs:
             name = job.name
             name_upper = name.upper()
@@ -68,18 +76,44 @@ class FetchCacheOrchestrator:
             if name_upper in skip_set:
                 continue
 
-            # build script arguments from the registry entry
             args = list(job.args_builder(self.cfg.shortlist_csv))
-
-            # attach any extra args for this job (e.g. --force)
             extra = extra_args.get(name_upper)
             if extra:
                 args.extend(extra)
-
-            # propagate verbosity flag if requested and not already present
             if verbose and "--verbose" not in args:
                 args.append("--verbose")
 
-            rc = self.runner.run(job.script_rel, args)
+            plan.append((name, job.script_rel, args))
+
+        if not plan:
+            return
+
+        # Parallel run (default): spawn each script in its own subprocess concurrently.
+        if parallel and len(plan) > 1:
+            workers = max_workers or min(8, len(plan))
+            failures: List[str] = []
+
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                fut_map = {
+                    ex.submit(self.runner.run, script_rel, args): name
+                    for (name, script_rel, args) in plan
+                }
+                for fut in as_completed(fut_map):
+                    name = fut_map[fut]
+                    try:
+                        rc = fut.result()
+                    except Exception as e:
+                        failures.append(f"{name} crashed ({e})")
+                        continue
+                    if rc != 0:
+                        failures.append(f"{name} failed (rc={rc})")
+
+            if failures:
+                raise SystemExit("; ".join(failures))
+            return
+
+        # Sequential fallback
+        for (name, script_rel, args) in plan:
+            rc = self.runner.run(script_rel, args)
             if rc != 0:
                 raise SystemExit(f"{name} failed (rc={rc})")
