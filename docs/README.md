@@ -139,8 +139,8 @@ python -m tools/screening_engine.py
 
 Outputs include:
 
-* `latest_flags.csv`
-* `latest_flags.json`
+* `YYYYMMDD_results.csv`
+* `YYYYMMDD_results.json`
 * internal debug reports
 
 The entire pipeline is deterministic and reproducible.

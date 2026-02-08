@@ -11,3 +11,4 @@ public/
 .env
 /tools/reports
 /reports
+/logs/

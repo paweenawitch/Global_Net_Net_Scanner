@@ -29,10 +29,12 @@ class CsvJsonValuationWriter(ValuationWriter):
         valuations: List[ValuationResult],
         fx_rates_ccy_to_usd: Dict[str, float],
     ) -> Dict[str, str]:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        now = datetime.now(timezone.utc)
+        stamp = now.strftime("%Y%m%d_%H%M%S")
+        date_stamp = now.strftime("%Y%m%d")
 
-        latest_csv = self._public_dir / "latest_flags.csv"
-        latest_json = self._public_dir / "latest_flags.json"
+        results_csv = self._public_dir / f"{date_stamp}_results.csv"
+        results_json = self._public_dir / f"{date_stamp}_results.json"
         debug_json = self._internal_dir / f"flags_debug_{stamp}.json"
         latest_dbg = self._internal_dir / "latest_flags_debug.json"
 
@@ -41,14 +43,14 @@ class CsvJsonValuationWriter(ValuationWriter):
 
         # CSV
         df = pd.DataFrame(rows)
-        df.to_csv(latest_csv, index=False)
+        df.to_csv(results_csv, index=False)
 
         # JSON export of full rows
-        latest_json.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+        results_json.write_text(json.dumps(rows, indent=2), encoding="utf-8")
 
         # debug payload (fx subset + metadata)
         debug_payload = {
-            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "generated_at": now.isoformat(timespec="seconds"),
             "rows_count": len(rows),
             "fx_rates_ccy_to_usd": fx_rates_ccy_to_usd,
         }
@@ -56,8 +58,8 @@ class CsvJsonValuationWriter(ValuationWriter):
         latest_dbg.write_text(json.dumps(debug_payload, indent=2), encoding="utf-8")
 
         return {
-            "csv": str(latest_csv),
-            "json": str(latest_json),
+            "csv": str(results_csv),
+            "json": str(results_json),
             "debug": str(debug_json),
             "latest_debug": str(latest_dbg),
         }
