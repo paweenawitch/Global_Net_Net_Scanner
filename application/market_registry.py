@@ -10,7 +10,7 @@ def default_registry(tools_root: Path) -> list[MarketJob]:
         MarketJob(
             name="US_CORE",
             script_rel=tools_root / "sec_extract_core.py",
-            args_builder=lambda shortlist: ["--skip-days","7","--sleep","0.35"],
+            args_builder=lambda shortlist: ["--shortlist", str(shortlist), "--skip-days","7","--sleep","0.35"],
             include_filter=only_us
         ),
         MarketJob(

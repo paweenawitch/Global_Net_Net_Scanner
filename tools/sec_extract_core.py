@@ -63,10 +63,10 @@ def _load_sec_ticker_map(sess: requests.Session) -> Dict[str, int]:
             out[t] = int(c)
     return out
 
-def load_universe_shortlist() -> List[Dict]:
-    """Read ncav_shortlist.csv, keep .US only, map to CIK via SEC map."""
+def load_universe_shortlist(universe_csv: Path = UNIVERSE_CSV) -> List[Dict]:
+    """Read shortlist CSV, keep .US only, map to CIK via SEC map."""
     rows = []
-    with open(UNIVERSE_CSV, newline="", encoding="utf-8") as f:
+    with open(universe_csv, newline="", encoding="utf-8") as f:
         rd = csv.DictReader(f)
         for r in rd:
             t = (r.get("ticker") or r.get("symbol") or "").strip().upper()
@@ -394,9 +394,10 @@ def build_core_object(ticker: str, name: str, cik: int, facts: dict, subs: dict)
 # ------------------------- Runner ----------------------
 def main(max_names: int = 0, sleep: float = SLEEP, shard: int = 1, of: int = 1,
          skip_days: int = 7, force: bool = False, tickers: Optional[List[str]] = None,
-         verbose: bool = False):
+         verbose: bool = False, shortlist: Optional[str] = None):
     print(f"[INFO] output -> {CORE_DIR.resolve()}")
-    all_rows = load_universe_shortlist() if not tickers else load_universe_shortlist()
+    shortlist_path = Path(shortlist) if shortlist else UNIVERSE_CSV
+    all_rows = load_universe_shortlist(shortlist_path)
 
     # explicit tickers bypass shard
     if tickers:
@@ -451,6 +452,7 @@ if __name__ == "__main__":
     ap.add_argument("--of", type=int, default=1)
     ap.add_argument("--skip-days", type=int, default=7)
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--shortlist", type=str, default=str(UNIVERSE_CSV))
     ap.add_argument("--tickers", nargs="*", help="Specific tickers (e.g. AAL.US ACEL.US)")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
@@ -462,6 +464,7 @@ if __name__ == "__main__":
         of=args.of,
         skip_days=args.skip_days,
         force=args.force,
+        shortlist=args.shortlist,
         tickers=args.tickers,
         verbose=args.verbose,
     )

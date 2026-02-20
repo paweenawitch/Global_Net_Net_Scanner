@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 from typing import Dict, List, Optional
+import logging
 import pandas as pd
 import yfinance as yf
 
 from application.ports import FxProvider
+
+logger = logging.getLogger(__name__)
 
 
 class YahooFxProvider(FxProvider):
@@ -45,6 +48,7 @@ class YahooFxProvider(FxProvider):
                 progress=False,
                 group_by="ticker",
                 threads=True,
+                auto_adjust=False,
             )
         except Exception:
             df = None
@@ -54,7 +58,10 @@ class YahooFxProvider(FxProvider):
                 return None
             d = d.sort_index()
             try:
-                v = float(d.iloc[-1]["Close"])
+                s = pd.to_numeric(d["Close"], errors="coerce").dropna()
+                if s.empty:
+                    return None
+                v = float(s.iloc[-1])
                 return v if pd.notna(v) else None
             except Exception:
                 return None
@@ -75,6 +82,15 @@ class YahooFxProvider(FxProvider):
             ccy_per_usd = last_close(df)
             if ccy_per_usd and ccy_per_usd > 0:
                 out[ccy] = 1.0 / ccy_per_usd
+
+        requested = {p.replace("=X", "")[3:] for p in pairs}
+        missing = sorted(requested - set(out.keys()))
+        if missing:
+            logger.warning(
+                "Yahoo FX missing/invalid close for %d currencies: %s",
+                len(missing),
+                missing[:20],
+            )
 
         out.setdefault("USD", 1.0)
         return out

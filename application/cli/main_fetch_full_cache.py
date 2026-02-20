@@ -22,6 +22,12 @@ def main() -> None:
 
     ap.add_argument("--verbose", action="store_true")
 
+    # job-level sharding controls
+    ap.add_argument("--us-core-shard", type=int, default=0, help="US_CORE shard index (1-based)")
+    ap.add_argument("--us-core-of", type=int, default=0, help="US_CORE number of shards")
+    ap.add_argument("--nonus-shard", type=int, default=0, help="NON_US shard index (1-based)")
+    ap.add_argument("--nonus-of", type=int, default=0, help="NON_US number of shards")
+
     # performance controls
     pg = ap.add_mutually_exclusive_group()
     pg.add_argument("--parallel", action="store_true", help="Run market jobs in parallel (default)")
@@ -68,6 +74,24 @@ def main() -> None:
 
     if args.force_us_core:
         extra_args.setdefault("US_CORE", []).append("--force")
+
+    if args.us_core_shard or args.us_core_of:
+        if args.us_core_shard < 1 or args.us_core_of < 1:
+            raise SystemExit("--us-core-shard and --us-core-of must both be >= 1")
+        if args.us_core_shard > args.us_core_of:
+            raise SystemExit("--us-core-shard must be <= --us-core-of")
+        extra_args.setdefault("US_CORE", []).extend(
+            ["--shard", str(args.us_core_shard), "--of", str(args.us_core_of)]
+        )
+
+    if args.nonus_shard or args.nonus_of:
+        if args.nonus_shard < 1 or args.nonus_of < 1:
+            raise SystemExit("--nonus-shard and --nonus-of must both be >= 1")
+        if args.nonus_shard > args.nonus_of:
+            raise SystemExit("--nonus-shard must be <= --nonus-of")
+        extra_args.setdefault("NON_US", []).extend(
+            ["--shard", str(args.nonus_shard), "--of", str(args.nonus_of)]
+        )
 
     extra_args_arg = extra_args or None
 
