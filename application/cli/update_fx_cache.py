@@ -44,11 +44,11 @@ def _atomic_write_json(path: Path, obj: Any) -> None:
 # Currency aliasing (Yahoo quirks)
 # -------------------------
 
-# Yahoo FX: USDCNY=X often missing, USDCNH=X exists.
-# Treat CNH as a proxy for CNY but keep both in output rates.
+# Yahoo FX: prefer CNY ticker; normalize CNH requests to CNY.
+# We still backfill both CNY and CNH in output rates for downstream compatibility.
 _CCY_ALIAS = {
-    "CNY": "CNH",
-    # You can add more aliases if you encounter them, e.g. "RMB": "CNH"
+    "CNH": "CNY",
+    # You can add more aliases if you encounter them.
 }
 
 def _normalize_ccy_for_fetch(ccy: str) -> str:
@@ -58,10 +58,12 @@ def _normalize_ccy_for_fetch(ccy: str) -> str:
 
 def _backfill_aliases_in_rates(rates: Dict[str, float]) -> Dict[str, float]:
     """
-    If we fetched CNH, also publish CNY using the same rate (USD per CCY).
-    This prevents downstream mismatches when FS currency says "CNY".
+    Publish both CNY and CNH using the same rate (USD per CCY) when either exists.
+    This prevents downstream mismatches across data sources.
     """
     out = dict(rates)
+    if "CNY" in out and "CNH" not in out:
+        out["CNH"] = out["CNY"]
     if "CNH" in out and "CNY" not in out:
         out["CNY"] = out["CNH"]
     return out
@@ -272,7 +274,7 @@ def main() -> None:
         "units": "usd_per_ccy",
         "notes": {
             "aliases": _CCY_ALIAS,
-            "alias_behavior": "fetch normalized currency; publish both if backfilled (e.g., CNH implies CNY)",
+            "alias_behavior": "fetch normalized currency; publish both CNY and CNH when either is available",
         },
         "inputs": {
             "cache_dir": str(cache_dir),
