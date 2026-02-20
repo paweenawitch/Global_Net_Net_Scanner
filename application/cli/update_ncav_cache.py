@@ -134,6 +134,8 @@ def run(
     force_all: bool,
     countries: Optional[Set[str]],
     mics: Optional[Set[str]],
+    shard: int,
+    of: int,
 ) -> None:
     from tools import ncav_cache
 
@@ -145,6 +147,11 @@ def run(
         before = len(rows)
         rows = [r for r in rows if _row_selected(r, countries, mics)]
         logger.write(f"Filtered universe: {before} -> {len(rows)} rows (country={countries} mic={mics})")
+
+    if of > 1:
+        before = len(rows)
+        rows = [r for idx, r in enumerate(rows) if (idx % of) == (shard - 1)]
+        logger.write(f"Sharded universe: {before} -> {len(rows)} rows (shard={shard}/{of})")
 
     if limit is not None:
         rows = rows[:limit]
@@ -171,6 +178,8 @@ def run(
         "limit": limit,
         "countries": sorted(list(countries)) if countries else None,
         "mics": sorted(list(mics)) if mics else None,
+        "shard": shard,
+        "of": of,
         "total_rows_selected": total,
         "refreshed": 0,
         "skipped_recent": 0,
@@ -270,10 +279,17 @@ def main() -> None:
                     help="Ignore min-cache-interval gate when statement is stale/missing.")
     ap.add_argument("--force-all", action="store_true",
                     help="Refresh everything selected (ignores statement age AND cache interval).")
+    ap.add_argument("--shard", type=int, default=1, help="Shard index (1-based).")
+    ap.add_argument("--of", type=int, default=1, help="Total number of shards.")
 
     ap.add_argument("--verbose", action="store_true", help="Log per-ticker SKIP lines too")
     ap.add_argument("--log-dir", type=str, default="logs", help="Directory for logs (project-relative)")
     args = ap.parse_args()
+
+    if args.shard < 1 or args.of < 1:
+        raise SystemExit("--shard and --of must both be >= 1")
+    if args.shard > args.of:
+        raise SystemExit("--shard must be <= --of")
 
     # Resolve project root:
     project_root = Path(__file__).resolve().parents[2]
@@ -287,7 +303,7 @@ def main() -> None:
         log_dir = (project_root / log_dir).resolve()
     _ensure_dir(log_dir)
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     log_path = log_dir / f"update_ncav_cache_{ts}.log"
     logger = DualLogger(log_path=log_path)
 
@@ -312,6 +328,8 @@ def main() -> None:
         force_all=args.force_all,
         countries=countries,
         mics=mics,
+        shard=args.shard,
+        of=args.of,
     )
 
 

@@ -1,7 +1,7 @@
 # tools/non_us_fetch_companyfact.py
 from __future__ import annotations
 """
-Non-US Companyfacts Fetcher (Step 2 – Yahoo path)
+Non-US Companyfacts Fetcher (Step 2 - Yahoo path)
 
 - Reads data/ncav_shortlist.csv; uses 'y_symbol' for Yahoo/yfinance (e.g., 1420.JP -> 1420.T)
 - Skips .US tickers entirely
@@ -70,7 +70,7 @@ _JSON_BUCKET = {"t": 0.0, "lock": threading.Lock()}
 _INFO_BUCKET = {"t": 0.0, "lock": threading.Lock()}
 
 def _pace(bucket: dict, rps: float):
-    """Ensure ≥ 1/rps seconds since last use of this bucket (with jitter)."""
+    """Ensure >= 1/rps seconds since last use of this bucket (with jitter)."""
     dt_min = 1.0 / max(0.1, rps)
     with bucket["lock"]:
         now = time.perf_counter()
@@ -358,7 +358,7 @@ def _get_shares_series(T) -> Optional[pd.Series]:
 def _map_shares_to_periods(periods: List[Dict[str, Any]], shares_series: Optional[pd.Series], info_shares: Optional[float], window_days: int = 90) -> Tuple[List[Dict[str, Any]], Optional[float], Dict[str, Any]]:
     """
     Attach 'shares_out' into EVERY period.balance using:
-      1) nearest share count within ±window_days
+      1) nearest share count within +/- window_days
       2) else last value prior to date
       3) else fallback to info_shares (flag approx)
     Returns (periods_with_shares, chosen_latest_shares, meta_shares_info)
@@ -491,7 +491,7 @@ def yf_build_core(y_symbol: str, original_ticker: str) -> Dict[str, Any]:
     if yf is None:
         raise RuntimeError("yfinance is not installed")
 
-    LOGGER.info("[core] %s -> %s — fetching yfinance info & statements", original_ticker, y_symbol)
+    LOGGER.info("[core] %s -> %s - fetching yfinance info & statements", original_ticker, y_symbol)
     T = yf.Ticker(y_symbol)
 
     # --- info (includes reporting currency and shares outstanding) ---
@@ -630,17 +630,17 @@ def _yahoo_quote_summary(y_symbol: str, modules: List[str]) -> dict:
                     res = {}
                 return res
             if code in (401, 404):
-                LOGGER.info("QS %s %s modules=%s → empty", code, y_symbol, params["modules"])
+                LOGGER.info("QS %s %s modules=%s -> empty", code, y_symbol, params["modules"])
                 return {}
             if code in (429, 500, 502, 503, 504):
                 back = min(8.0, 0.8 * (2 ** attempt))
-                LOGGER.warning("QS %s for %s — retry %.1fs", code, y_symbol, back)
+                LOGGER.warning("QS %s for %s - retry %.1fs", code, y_symbol, back)
                 time.sleep(back); _pace(_JSON_BUCKET, YF_RPS_JSON); continue
             LOGGER.warning("QS %s for %s body=%.120s", code, y_symbol, getattr(resp, "text", "")[:120])
             return {}
         except Exception as e:
             back = min(8.0, 0.8 * (2 ** attempt))
-            LOGGER.warning("QS error for %s (%s) — retry %.1fs", y_symbol, e, back)
+            LOGGER.warning("QS error for %s (%s) - retry %.1fs", y_symbol, e, back)
             time.sleep(back); _pace(_JSON_BUCKET, YF_RPS_JSON)
     return {}
 
@@ -762,7 +762,7 @@ def run_for_row(ticker: str, y_symbol: str, sleep: float = 0.35) -> Dict[str, An
     core_path = CORE_DIR / f"{ticker}_core.json"
     ins_path  = INS_DIR  / f"{ticker}.json"
 
-    LOGGER.info("→ %s uses y_symbol=%s", ticker, y_symbol)
+    LOGGER.info("-> %s uses y_symbol=%s", ticker, y_symbol)
 
     core_obj = yf_build_core(y_symbol, ticker)
     write_json(core_path, core_obj)
@@ -771,7 +771,7 @@ def run_for_row(ticker: str, y_symbol: str, sleep: float = 0.35) -> Dict[str, An
     ins_obj = {"ticker": ticker, "y_symbol": y_symbol, **ins}
     write_json(ins_path, ins_obj)
 
-    LOGGER.info("✓ done %s", ticker)
+    LOGGER.info("done %s", ticker)
     time.sleep(max(0.0, sleep))
     return {"ticker": ticker, "core": str(core_path), "insider": str(ins_path), "status": "ok"}
 
@@ -779,9 +779,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shortlist", default=str(ROOT / SHORTLIST_DEFAULT))
     ap.add_argument("--sleep", type=float, default=0.35)
+    ap.add_argument("--shard", type=int, default=1, help="Shard index (1-based)")
+    ap.add_argument("--of", type=int, default=1, help="Total number of shards")
     ap.add_argument("--one", help="run a single ORIGINAL ticker (non-US), e.g., 1420.JP")
     ap.add_argument("--verbose", action="store_true", help="log progress verbosely")
     args = ap.parse_args()
+
+    if args.shard < 1 or args.of < 1:
+        raise SystemExit("--shard and --of must both be >= 1")
+    if args.shard > args.of:
+        raise SystemExit("--shard must be <= --of")
 
     logging.basicConfig(
         level=(logging.DEBUG if args.verbose else logging.INFO),
@@ -799,20 +806,28 @@ def main():
         ysym = resolve_y_symbol(t, rows) or t
         logs.append(run_for_row(t, ysym, sleep=args.sleep))
     else:
-        for r in rows:
+        non_us_rows: List[Dict[str, str]] = []
+        for i, r in enumerate(rows):
             t = r["ticker"].strip().upper()
             if not t:
                 continue
             if is_us_ticker(t):
-                LOGGER.info("[skip] %s is US — skipping in non-US run", t)
+                LOGGER.info("[skip] %s is US - skipping in non-US run", t)
                 continue
+            if args.of > 1 and (i % args.of) != (args.shard - 1):
+                continue
+            non_us_rows.append(r)
+
+        LOGGER.info("selected %d non-US rows (shard %d/%d)", len(non_us_rows), args.shard, args.of)
+
+        for r in non_us_rows:
+            t = r["ticker"].strip().upper()
             ysym = (r.get("y_symbol") or "").strip() or t
             try:
                 logs.append(run_for_row(t, ysym, sleep=args.sleep))
             except Exception as e:
                 LOGGER.exception("[error] %s failed", t)
                 logs.append({"ticker": t, "status": f"error:{e}"})
-
     report = {"generated_at": _now_iso(), "rows": logs}
     (ROOT / "reports").mkdir(parents=True, exist_ok=True)
     (ROOT / "reports" / "nonus_fetch_companyfacts_log.json").write_text(
@@ -821,3 +836,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
