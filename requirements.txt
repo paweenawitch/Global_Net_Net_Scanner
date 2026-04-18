@@ -9,3 +9,4 @@ requests~=2.32.5
 xlrd~=2.0.1
 openpyxl~=3.1.5
 lxml~=6.0.2
+pytest~=8.0.0
