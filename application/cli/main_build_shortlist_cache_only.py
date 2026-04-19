@@ -14,11 +14,9 @@ from infrastructure.repositories.local_shortlist_repository import LocalShortlis
 from infrastructure.repositories.sqlite_price_repository import SqlitePriceRepository
 from infrastructure.sources.cached_price_client import CachedPriceClient
 
-# Default to your tools cache root for outputs (same as main_build_shortlist.py)
-try:
-    from tools.ncav_cache import ROOT as CACHE_ROOT  # type: ignore
-except Exception:
-    CACHE_ROOT = Path.cwd()
+# Default project paths
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+CACHE_ROOT = PROJECT_ROOT
 
 
 def _load_fx_cache(path: Path) -> Dict[str, float]:
@@ -108,8 +106,11 @@ def main():
     logger = logging.getLogger("shortlist-cache-only")
     logger.info("Starting shortlist builder (cache-only)")
 
-    universe = CsvUniverseLoaderRepository(Path(args.tickers_csv))
-    fundamentals = NcavCacheRepository()  # ✅ same as main_build_shortlist.py :contentReference[oaicite:3]{index=3}
+    from infrastructure.repositories.sqlite_universe_repository import SqliteUniverseRepository
+    from infrastructure.repositories.ncav_cache_repository import NcavCacheRepository
+
+    universe = SqliteUniverseRepository(db_path=str(args.price_cache).replace("market_snapshots", "filings"))
+    fundamentals = NcavCacheRepository()
 
     # ✅ Cached prices
     price_repo = SqlitePriceRepository(db_path=str(args.price_cache))
@@ -119,7 +120,8 @@ def main():
     fx_rates = _load_fx_cache(Path(args.fx_cache))
     fx = CachedFxProvider(fx_rates)
 
-    out = LocalShortlistRepository(CACHE_ROOT)
+    from infrastructure.repositories.sqlite_shortlist_repository import SqliteShortlistRepository
+    out = SqliteShortlistRepository(db_path=str(args.price_cache).replace("market_snapshots", "filings"))
 
     svc = BuildShortlistService(universe, fundamentals, prices, fx, out, logger=logger, log_every=args.log_every)
     cfg = ShortlistConfig(

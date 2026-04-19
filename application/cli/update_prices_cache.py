@@ -39,7 +39,7 @@ class DualLogger:
 
 def _build_symbols_from_universe(universe_repo: ShortlistUniverseRepository) -> List[str]:
     # canonical mapping in your project
-    from tools.ncav_cache import to_yahoo  # uses your mapping
+    from infrastructure.sources.yahoo_source import to_yahoo_symbol as to_yahoo
 
     rows = universe_repo.load_tickers()
     syms: List[str] = []
@@ -254,10 +254,10 @@ def main() -> None:
     logger.write(f"Universe CSV: {csv_path}")
     logger.write(f"Price cache:  {price_cache_path}")
 
-    from infrastructure.repositories.csv_universe_loader_repository import CsvUniverseLoaderRepository
+    from infrastructure.repositories.sqlite_universe_repository import SqliteUniverseRepository
     from infrastructure.sources.yahoo_price_client import YahooPriceClient
 
-    universe_repo = CsvUniverseLoaderRepository(csv_path)
+    universe_repo = SqliteUniverseRepository(db_path="data/db/filings.sqlite")
     price_client = YahooPriceClient()
     price_repo = SqlitePriceRepository(db_path=str(price_cache_path))
 

@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any
 from dataclasses import asdict
 import os
 
-from tools.ncav_cache import NcavRecord
+from domain.models.fundamentals import NcavRecord
 
 def _dumps(obj: Any) -> str:
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
@@ -54,6 +54,42 @@ class SqliteFilingStore:
                     ticker TEXT PRIMARY KEY,
                     updated_at TEXT NOT NULL,
                     core_json TEXT NOT NULL
+                );
+                """
+            )
+
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS universe_tickers (
+                    ticker TEXT PRIMARY KEY,
+                    name TEXT,
+                    country TEXT,
+                    mic TEXT,
+                    exchange TEXT,
+                    sector TEXT,
+                    industry TEXT,
+                    updated_at TEXT NOT NULL
+                );
+                """
+            )
+
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS shortlist_items (
+                    ticker TEXT PRIMARY KEY,
+                    price REAL NOT NULL,
+                    currency TEXT,
+                    updated_at TEXT NOT NULL
+                );
+                """
+            )
+
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS insider_snapshots (
+                    ticker TEXT PRIMARY KEY,
+                    updated_at TEXT NOT NULL,
+                    insider_json TEXT NOT NULL
                 );
                 """
             )
@@ -110,5 +146,74 @@ class SqliteFilingStore:
         with self._connect() as con:
             con.execute(
                 "INSERT OR REPLACE INTO sec_core_snapshots (ticker, updated_at, core_json) VALUES (?, ?, ?)",
+                (ticker, updated_at, _dumps(data))
+            )
+
+    # --- Universe ---
+    def get_all_universe_tickers(self) -> List[Dict[str, Any]]:
+        with self._connect() as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute("SELECT * FROM universe_tickers").fetchall()
+            return [dict(r) for r in rows]
+
+    def upsert_universe_ticker(self, data: Dict[str, Any]) -> None:
+        from datetime import datetime, timezone
+        updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as con:
+            con.execute(
+                """
+                INSERT OR REPLACE INTO universe_tickers (
+                    ticker, name, country, mic, exchange, sector, industry, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    data["ticker"],
+                    data.get("name"),
+                    data.get("country"),
+                    data.get("mic"),
+                    data.get("exchange"),
+                    data.get("sector"),
+                    data.get("industry"),
+                    updated_at
+                )
+            )
+
+    # --- Shortlist ---
+    def get_shortlist(self) -> List[Dict[str, Any]]:
+        with self._connect() as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute("SELECT * FROM shortlist_items").fetchall()
+            return [dict(r) for r in rows]
+
+    def upsert_shortlist_item(self, ticker: str, price: float, currency: Optional[str] = None) -> None:
+        from datetime import datetime, timezone
+        updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as con:
+            con.execute(
+                "INSERT OR REPLACE INTO shortlist_items (ticker, price, currency, updated_at) VALUES (?, ?, ?, ?)",
+                (ticker, price, currency, updated_at)
+            )
+
+    def clear_shortlist(self) -> None:
+        with self._connect() as con:
+            con.execute("DELETE FROM shortlist_items")
+
+    # --- Insiders ---
+    def get_insider(self, ticker: str) -> Optional[Dict[str, Any]]:
+        with self._connect() as con:
+            row = con.execute("SELECT insider_json FROM insider_snapshots WHERE ticker = ?", (ticker,)).fetchone()
+            if not row:
+                return None
+            try:
+                return _loads(row[0])
+            except Exception:
+                return None
+
+    def upsert_insider(self, ticker: str, data: Dict[str, Any]) -> None:
+        from datetime import datetime, timezone
+        updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as con:
+            con.execute(
+                "INSERT OR REPLACE INTO insider_snapshots (ticker, updated_at, insider_json) VALUES (?, ?, ?)",
                 (ticker, updated_at, _dumps(data))
             )

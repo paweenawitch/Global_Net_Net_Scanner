@@ -130,57 +130,47 @@ def _should_skip_due_to_recent_fx_cache(out_path: Path, min_cache_interval_days:
     return False, f"fx_cache_age_days={age}"
 
 
-def _scan_currencies_from_ncav_cache(
-    cache_dir: Path,
+def _scan_currencies_from_db(
+    db_path: str,
     *,
     include_targets: bool,
-    limit_files: Optional[int],
     logger: DualLogger,
 ) -> tuple[Set[str], int]:
     """
-    Discover currencies by scanning cached NCAV records on disk.
-
-    Source of truth:
-      - file stems (house ticker)
-      - tools.ncav_cache.load_cached(ticker) -> rec.currency (FS currency)
-      - optional target trading currency inferred from ticker suffix
+    Discover currencies by scanning the SQLite filings store.
     """
-    from tools import ncav_cache  # uses your existing cache loader
-
+    from infrastructure.persistence.sqlite_filing_store import SqliteFilingStore
+    store = SqliteFilingStore(db_path)
+    
+    # We also need any tickers from the universe to infer targets
+    all_tickers = store.get_all_universe_tickers()
+    
     needed: Set[str] = set(["USD"])
-    files = sorted(cache_dir.glob("*.json"))
-    if limit_files is not None:
-        files = files[:limit_files]
-
     missing_or_bad = 0
 
-    for fp in files:
-        ht = fp.stem  # house ticker
+    # 1. FS currencies from cached records
+    con = store._connect()
+    rows = con.execute("SELECT ncav_json FROM ncav_records").fetchall()
+    import json
+    for r in rows:
         try:
-            rec = ncav_cache.load_cached(ht)
+            data = json.loads(r[0])
+            ccy = data.get("currency")
+            if ccy:
+                needed.add(_normalize_ccy_for_fetch(str(ccy)))
         except Exception:
-            rec = None
-
-        if rec is None:
             missing_or_bad += 1
-            # Still can include target currency if asked
-            if include_targets:
+
+    # 2. Target currencies from universe
+    if include_targets:
+        for t in all_tickers:
+            ht = t.get("ticker")
+            if ht:
                 tc = _target_currency_from_ticker(ht)
                 if tc:
                     needed.add(_normalize_ccy_for_fetch(tc))
-            continue
 
-        # FS currency
-        if getattr(rec, "currency", None):
-            needed.add(_normalize_ccy_for_fetch(str(rec.currency)))
-
-        # Target trading currency
-        if include_targets:
-            tc = _target_currency_from_ticker(ht)
-            if tc:
-                needed.add(_normalize_ccy_for_fetch(tc))
-
-    logger.write(f"Scanned cache files: {len(files)} (missing/bad records: {missing_or_bad})")
+    logger.write(f"Scanned DB: found {len(needed)} unique currencies")
     return needed, missing_or_bad
 
 
@@ -202,14 +192,8 @@ def main() -> None:
 
     project_root = Path(__file__).resolve().parents[2]
 
-    # Resolve NCAV cache dir
-    if args.cache_dir:
-        cache_dir = Path(args.cache_dir)
-        if not cache_dir.is_absolute():
-            cache_dir = (project_root / cache_dir).resolve()
-    else:
-        from tools.ncav_cache import CACHE
-        cache_dir = Path(CACHE)
+    # Resolve DB path
+    db_path = str(project_root / "data" / "db" / "filings.sqlite")
 
     # Resolve outputs
     out_path = Path(args.out)
@@ -226,14 +210,10 @@ def main() -> None:
     logger = DualLogger(log_path)
 
     logger.write(f"Project root: {project_root}")
-    logger.write(f"NCAV cache dir: {cache_dir}")
+    logger.write(f"DB Path: {db_path}")
     logger.write(f"FX out: {out_path}")
-    logger.write(f"include_targets={args.include_targets} limit_files={args.limit_files}")
+    logger.write(f"include_targets={args.include_targets}")
     logger.write(f"min_cache_interval_days={args.min_cache_interval_days} force={args.force}")
-
-    if not cache_dir.exists():
-        logger.write(f"ERROR: cache dir not found: {cache_dir}")
-        raise FileNotFoundError(f"NCAV cache dir not found: {cache_dir}")
 
     # Optional: skip if FX cache recently updated
     if not args.force:
@@ -244,10 +224,9 @@ def main() -> None:
             return
         logger.write(f"FX cache gate: {reason}")
 
-    needed_ccy, missing = _scan_currencies_from_ncav_cache(
-        cache_dir,
+    needed_ccy, missing = _scan_currencies_from_db(
+        db_path,
         include_targets=args.include_targets,
-        limit_files=args.limit_files,
         logger=logger,
     )
 
@@ -277,9 +256,8 @@ def main() -> None:
             "alias_behavior": "fetch normalized currency; publish both CNY and CNH when either is available",
         },
         "inputs": {
-            "cache_dir": str(cache_dir),
+            "db_path": db_path,
             "include_targets": args.include_targets,
-            "limit_files": args.limit_files,
             "missing_or_bad_records": missing,
         },
         "requested_ccy": needed_list,
