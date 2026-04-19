@@ -11,7 +11,7 @@ from application.build_shortlist_service import BuildShortlistService
 from infrastructure.repositories.csv_universe_loader_repository import CsvUniverseLoaderRepository
 from infrastructure.repositories.ncav_cache_repository import NcavCacheRepository
 from infrastructure.repositories.local_shortlist_repository import LocalShortlistRepository
-from infrastructure.repositories.json_price_cache_repository import JsonPriceCacheRepository
+from infrastructure.repositories.sqlite_price_repository import SqlitePriceRepository
 from infrastructure.sources.cached_price_client import CachedPriceClient
 
 # Default to your tools cache root for outputs (same as main_build_shortlist.py)
@@ -82,7 +82,7 @@ class CachedFxProvider:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tickers_csv", type=str, default=str(CACHE_ROOT / "data" / "tickers" / "global_full.csv"))
-    ap.add_argument("--price_cache", type=str, default=str(CACHE_ROOT / "cache" / "prices" / "latest.json"))
+    ap.add_argument("--price_cache", type=str, default=str(CACHE_ROOT / "data" / "db" / "market_snapshots.sqlite"))
     ap.add_argument("--fx_cache", type=str, default=str(CACHE_ROOT / "cache" / "fx" / "usd_per_ccy.json"))
 
     ap.add_argument("--max-workers", type=int, default=3)
@@ -112,7 +112,7 @@ def main():
     fundamentals = NcavCacheRepository()  # ✅ same as main_build_shortlist.py :contentReference[oaicite:3]{index=3}
 
     # ✅ Cached prices
-    price_repo = JsonPriceCacheRepository(cache_path=str(args.price_cache))
+    price_repo = SqlitePriceRepository(db_path=str(args.price_cache))
     prices = CachedPriceClient(price_repo)
 
     # ✅ Cached FX (no network)
@@ -133,7 +133,7 @@ def main():
     )
     meta = svc.run(cfg)
     logger.info("Shortlist done → %s", meta["outputs"]["ncav_shortlist_csv"])
-    print("Shortlist done →", meta["outputs"]["ncav_shortlist_csv"])
+    print("Shortlist done ->", meta["outputs"]["ncav_shortlist_csv"])
 
 
 if __name__ == "__main__":

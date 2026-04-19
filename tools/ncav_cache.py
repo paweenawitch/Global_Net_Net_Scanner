@@ -308,16 +308,14 @@ class NcavRecord:
         )
 
 # ---------- JSON I/O ----------
-def _cache_path(h: str) -> Path:
-    return CACHE / f"{h.replace('/', '_')}.json"
+from infrastructure.persistence.sqlite_filing_store import SqliteFilingStore
+
+def _get_store() -> SqliteFilingStore:
+    db_path = str(ROOT / "data" / "db" / "filings.sqlite")
+    return SqliteFilingStore(db_path)
 
 def load_cached(h: str) -> Optional[NcavRecord]:
-    p = _cache_path(h)
-    if not p.exists(): return None
-    try:
-        return NcavRecord(**json.loads(p.read_text(encoding="utf-8")))
-    except Exception:
-        return None
+    return _get_store().get_ncav_record(h)
 
 def _nan_to_none(obj):
     if isinstance(obj, dict):  return {k:_nan_to_none(v) for k,v in obj.items()}
@@ -329,7 +327,8 @@ def _nan_to_none(obj):
 
 def save_cache(rec: NcavRecord) -> None:
     payload = _nan_to_none(asdict(rec))
-    _cache_path(rec.ticker).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    clean_rec = NcavRecord(**payload)
+    _get_store().upsert_ncav_record(clean_rec)
 
 # ---------- Public API (Windows-safe timeout) ----------
 def build_or_update(house_ticker: str, fetch_timeout: int = 15) -> NcavRecord:

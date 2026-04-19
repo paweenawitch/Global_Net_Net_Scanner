@@ -13,7 +13,7 @@ from typing import Dict, Optional, Tuple, List, Any
 import yfinance as yf
 
 from application.ports import PriceClient, PricePoint, ShortlistUniverseRepository
-from infrastructure.repositories.json_price_cache_repository import JsonPriceCacheRepository
+from infrastructure.repositories.sqlite_price_repository import SqlitePriceRepository
 
 
 def _utc_now_iso() -> str:
@@ -91,7 +91,7 @@ def run(
     *,
     universe_repo: ShortlistUniverseRepository,
     price_client: PriceClient,
-    price_repo: JsonPriceCacheRepository,
+    price_repo: SqlitePriceRepository,
     batch_size: int,
     logger: DualLogger,
     limit: Optional[int],
@@ -180,7 +180,7 @@ def run(
             logger.write(f"[batch {bi}] done | ok={ok} none={none_count} failed_batches={failed_batches} | elapsed {elapsed:.2f}s")
 
     price_repo.put_many(points)
-    logger.write(f"Saved {len(points)} price points to {price_repo.cache_path}")
+    logger.write(f"Saved {len(points)} price points to {price_repo._store._db_path}")
 
     if quote_ccy_mode != "none" and cc_updates > 0:
         _save_quote_currency_cache(quote_ccy_cache_path, cc_map)
@@ -197,7 +197,7 @@ def run(
         "quote_ccy_mode": quote_ccy_mode,
         "quote_ccy_cache": str(quote_ccy_cache_path),
         "min_batch_interval_s": min_batch_interval_s,
-        "price_cache": str(price_repo.cache_path),
+        "price_cache": price_repo._store._db_path,
     }
     audit_path = Path(str(logger.log_path) + ".json")
     audit_path.write_text(json.dumps(audit, indent=2), encoding="utf-8")
@@ -211,7 +211,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", required=True, help="Path to universe CSV (absolute or project-relative)")
     ap.add_argument("--batch-size", type=int, default=50, help="Keep small to reduce Yahoo flakiness")
-    ap.add_argument("--price-cache", type=str, default="cache/prices/latest.json")
+    ap.add_argument("--price-cache", type=str, default="data/db/market_snapshots.sqlite")
     ap.add_argument("--log-dir", type=str, default="logs")
     ap.add_argument("--limit", type=int)
     ap.add_argument(
@@ -259,7 +259,7 @@ def main() -> None:
 
     universe_repo = CsvUniverseLoaderRepository(csv_path)
     price_client = YahooPriceClient()
-    price_repo = JsonPriceCacheRepository(cache_path=str(price_cache_path))
+    price_repo = SqlitePriceRepository(db_path=str(price_cache_path))
 
     run(
         universe_repo=universe_repo,
