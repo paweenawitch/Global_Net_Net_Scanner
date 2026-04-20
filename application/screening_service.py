@@ -3,10 +3,11 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Protocol
 
 from domain.models.valuation_result import ValuationResult
 from domain.services.netnet_analysis import analyze_one_ticker
+from application.ports import FxProvider, ScreeningResultRepository
 
 
 @dataclass
@@ -27,11 +28,6 @@ class CoreRepository(Protocol):
 
 class InsiderRepository(Protocol):
     def load_insiders(self, ticker: str) -> Optional[Dict[str, Any]]:
-        ...
-
-
-class FxProvider(Protocol):
-    def get_rates_ccy_to_usd(self) -> Dict[str, float]:
         ...
 
 
@@ -58,16 +54,23 @@ class ScreeningService:
         insider_repo: InsiderRepository,
         fx_provider: FxProvider,
         writer: ValuationWriter,
+        screening_repo: Optional[ScreeningResultRepository] = None,
     ) -> None:
         self._shortlist_repo = shortlist_repo
         self._core_repo = core_repo
         self._insider_repo = insider_repo
         self._fx_provider = fx_provider
         self._writer = writer
+        self._screening_repo = screening_repo
 
-    def screen_shortlist(self, shortlist_path: Path) -> ScreeningSummary:
+    def screen_shortlist(self, shortlist_path: Path, run_date: Optional[str] = None) -> ScreeningSummary:
+        from datetime import datetime
+        if not run_date:
+            run_date = datetime.now().strftime("%Y%m%d")
+
         items = self._shortlist_repo.load_shortlist(shortlist_path)
-        fx_rates = self._fx_provider.get_rates_ccy_to_usd()
+        # For screening, we fetch common currencies or let the provider decide
+        fx_rates = self._fx_provider.usd_per_ccy(["JPY", "HKD", "CNY", "CNH", "THB", "GBP", "EUR"])
 
         results: List[ValuationResult] = []
         for item in items:
@@ -83,6 +86,9 @@ class ScreeningService:
                 fx_rates=fx_rates,
             )
             results.append(valuation)
+
+        if self._screening_repo:
+            self._screening_repo.save_results(results, run_date=run_date)
 
         paths = self._writer.write(results, fx_rates_ccy_to_usd=fx_rates)
         return ScreeningSummary(count=len(results), output_paths=paths)

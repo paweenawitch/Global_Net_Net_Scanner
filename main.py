@@ -1,200 +1,180 @@
 from __future__ import annotations
 
 import argparse
-import os
-import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable
 
+from infrastructure.persistence.sqlite_os_state_store import SqliteOsStateStore
+from infrastructure.scheduler.lock_manager import TaskLockManager
+from application.os.task_registry import TaskRegistry
+from application.os.task_runner import TaskRunner
+from application.os.task_specs import TaskSpec
+from application.os import run_pipeline
 
-def _run_cmd(
-    repo_root: Path,
-    argv: Sequence[str],
-    *,
-    env_overrides: dict[str, str] | None = None,
-) -> None:
-    env = os.environ.copy()
-    if env_overrides:
-        env.update(env_overrides)
-    print("[RUN]", " ".join(argv))
-    proc = subprocess.run(argv, cwd=str(repo_root), env=env)
-    if proc.returncode != 0:
-        raise SystemExit(f"Command failed (rc={proc.returncode}): {' '.join(argv)}")
+class Walter:
+    def __init__(self, db_path: str):
+        self.store = SqliteOsStateStore(db_path)
+        self.lock_manager = TaskLockManager(self.store, lock_owner="main_process")
+        self.registry = TaskRegistry()
+        self._register_pipelines()
+        self.runner = TaskRunner(self.registry, self.store, self.lock_manager)
 
+    def _register_pipelines(self):
+        self.registry.register("refresh_fx", run_pipeline.run_fx_update)
+        self.registry.register("refresh_prices", run_pipeline.run_prices_update)
+        self.registry.register("build_shortlist", run_pipeline.run_build_shortlist)
+        self.registry.register("build_universe", run_pipeline.run_build_universe)
+        self.registry.register("update_ncav", run_pipeline.run_ncav_update)
+        self.registry.register("fetch_full", run_pipeline.run_fetch_full_cache)
+        self.registry.register("inspect_data", run_pipeline.run_data_inspection)
+        self.registry.register("run_audit", run_pipeline.run_maintenance_audit)
 
-def _run_parallel_shards(
-    repo_root: Path,
-    *,
-    python_exec: str,
-    shard_count: int,
-    shard_builder,
-    env_overrides: dict[str, str] | None = None,
-) -> None:
-    if shard_count < 1:
-        raise SystemExit("shard_count must be >= 1")
-    jobs = [list(shard_builder(i, shard_count)) for i in range(1, shard_count + 1)]
-    if shard_count == 1:
-        _run_cmd(repo_root, jobs[0], env_overrides=env_overrides)
-        return
+    def run_daily_cycle(self, universe_csv: str, price_batch_size: int, price_min_batch_interval: float):
+        print(">>> Starting Walter Daily Cycle")
+        # 1. FX
+        self.runner.run_task(spec=TaskSpec(task_name="daily_fx", pipeline="refresh_fx", params={"include_targets": True}))
+        # 2. Prices
+        self.runner.run_task(spec=TaskSpec(task_name="daily_prices", pipeline="refresh_prices", params={
+            "universe_csv": universe_csv,
+            "batch_size": price_batch_size,
+            "min_batch_interval": price_min_batch_interval
+        }))
+        # 3. Shortlist
+        self.runner.run_task(spec=TaskSpec(task_name="daily_shortlist", pipeline="build_shortlist", params={"universe_csv": universe_csv}))
+        
+        # 4. Self-Audit (Internal Health)
+        self.runner.run_task(spec=TaskSpec(task_name="daily_audit", pipeline="run_audit", params={
+            "walter_db": self.store.db_path,
+            "db_paths": ["data/db/filings.sqlite", "data/db/market_snapshots.sqlite", self.store.db_path]
+        }))
+        print("<<< Walter Daily Cycle Finished")
 
-    failures: list[str] = []
-    with ThreadPoolExecutor(max_workers=shard_count) as ex:
-        futs = {
-            ex.submit(_run_cmd, repo_root, job, env_overrides=env_overrides): idx + 1
-            for idx, job in enumerate(jobs)
-        }
-        for fut in as_completed(futs):
-            shard = futs[fut]
-            try:
+    def run_weekly_cycle(
+        self,
+        universe_csv: str,
+        ncav_shards: int,
+        fetch_us_shards: int,
+        fetch_nonus_shards: int,
+        ncav_max_age_days: int,
+        ncav_min_cache_interval_days: int,
+        ncav_fetch_timeout: int,
+        ncav_regional: bool = False,
+    ):
+        print(">>> Starting Walter Weekly Cycle")
+        repo_root = Path(universe_csv).parent.parent.parent # d:/Projects/.../data/tickers
+
+        # 1. Universe
+        self.runner.run_task(spec=TaskSpec(task_name="weekly_universe", pipeline="build_universe"))
+
+        # 2. NCAV Shards or Regional Parallelism
+        if ncav_regional:
+            regional_files = sorted(Path(repo_root / "data" / "tickers").glob("*_full.csv"))
+            # Filter out global_full.csv if present
+            regional_files = [f for f in regional_files if f.name != "global_full.csv"]
+            
+            print(f"> Running {len(regional_files)} regional NCAV updates in parallel: {[f.name for f in regional_files]}")
+            with ThreadPoolExecutor(max_workers=len(regional_files)) as ex:
+                futs = []
+                for csv_path in regional_files:
+                    region = csv_path.name.replace("_full.csv", "").upper()
+                    spec = TaskSpec(
+                        task_name=f"weekly_ncav_{region}",
+                        pipeline="update_ncav",
+                        params={
+                            "universe_csv": str(csv_path),
+                            "max_age_days": ncav_max_age_days,
+                            "min_cache_interval_days": ncav_min_cache_interval_days,
+                            "fetch_timeout": ncav_fetch_timeout,
+                        }
+                    )
+                    futs.append(ex.submit(self.runner.run_task, spec=spec))
+                for fut in as_completed(futs):
+                    fut.result()
+        else:
+            print(f"> Running {ncav_shards} NCAV shards in parallel")
+            with ThreadPoolExecutor(max_workers=ncav_shards) as ex:
+                futs = []
+                for i in range(1, ncav_shards + 1):
+                    spec = TaskSpec(
+                        task_name=f"weekly_ncav_shard_{i}",
+                        pipeline="update_ncav",
+                        params={
+                            "universe_csv": universe_csv,
+                            "max_age_days": ncav_max_age_days,
+                            "min_cache_interval_days": ncav_min_cache_interval_days,
+                            "fetch_timeout": ncav_fetch_timeout,
+                            "shard": i,
+                            "of": ncav_shards
+                        }
+                    )
+                    futs.append(ex.submit(self.runner.run_task, spec=spec))
+                for fut in as_completed(futs):
+                    fut.result()
+
+        # 3. Full Fetch US Shards (Parallel)
+        print(f"> Running {fetch_us_shards} US fetch shards in parallel")
+        with ThreadPoolExecutor(max_workers=fetch_us_shards) as ex:
+            futs = []
+            for i in range(1, fetch_us_shards + 1):
+                spec = TaskSpec(
+                    task_name=f"weekly_fetch_us_shard_{i}",
+                    pipeline="fetch_full",
+                    params={
+                        "us_only": True,
+                        "shard": i,
+                        "of": fetch_us_shards
+                    }
+                )
+                futs.append(ex.submit(self.runner.run_task, spec=spec))
+            for fut in as_completed(futs):
                 fut.result()
-            except Exception as e:
-                failures.append(f"shard {shard}: {e}")
-    if failures:
-        raise SystemExit("; ".join(failures))
 
+        # 4. Full Fetch Non-US Shards (Parallel)
+        print(f"> Running {fetch_nonus_shards} Non-US fetch shards in parallel")
+        with ThreadPoolExecutor(max_workers=fetch_nonus_shards) as ex:
+            futs = []
+            for i in range(1, fetch_nonus_shards + 1):
+                spec = TaskSpec(
+                    task_name=f"weekly_fetch_nonus_shard_{i}",
+                    pipeline="fetch_full",
+                    params={
+                        "nonus_only": True,
+                        "shard": i,
+                        "of": fetch_nonus_shards
+                    }
+                )
+                futs.append(ex.submit(self.runner.run_task, spec=spec))
+            for fut in as_completed(futs):
+                fut.result()
 
-def run_daily(
-    repo_root: Path,
-    *,
-    python_exec: str,
-    universe_csv: str,
-    price_batch_size: int,
-    price_min_batch_interval: float,
-) -> None:
-    _run_cmd(
-        repo_root,
-        [
-            python_exec,
-            "-m",
-            "application.cli.update_fx_cache",
-            "--include-targets",
-        ],
-    )
-    _run_cmd(
-        repo_root,
-        [
-            python_exec,
-            "-m",
-            "application.cli.update_prices_cache",
-            "--csv",
-            universe_csv,
-            "--batch-size",
-            str(price_batch_size),
-            "--min-batch-interval",
-            str(price_min_batch_interval),
-        ],
-    )
-    _run_cmd(
-        repo_root,
-        [
-            python_exec,
-            "-m",
-            "application.cli.main_build_shortlist_cache_only",
-            "--tickers_csv",
-            universe_csv,
-        ],
-    )
+        # 5. US Insiders
+        self.runner.run_task(spec=TaskSpec(task_name="weekly_fetch_insiders", pipeline="fetch_full", params={"only": ["US_INSIDERS"]}))
 
-
-def run_weekly(
-    repo_root: Path,
-    *,
-    python_exec: str,
-    universe_csv: str,
-    ncav_shards: int,
-    fetch_us_shards: int,
-    fetch_nonus_shards: int,
-    ncav_max_age_days: int,
-    ncav_min_cache_interval_days: int,
-    ncav_fetch_timeout: int,
-) -> None:
-    _run_cmd(repo_root, [python_exec, "-m", "application.cli.build_universe"])
-
-    _run_parallel_shards(
-        repo_root,
-        python_exec=python_exec,
-        shard_count=ncav_shards,
-        shard_builder=lambda shard, of: [
-            python_exec,
-            "-m",
-            "application.cli.update_ncav_cache",
-            "--csv",
-            universe_csv,
-            "--max-age-days",
-            str(ncav_max_age_days),
-            "--min-cache-interval-days",
-            str(ncav_min_cache_interval_days),
-            "--fetch-timeout",
-            str(ncav_fetch_timeout),
-            "--shard",
-            str(shard),
-            "--of",
-            str(of),
-        ],
-    )
-
-    _run_parallel_shards(
-        repo_root,
-        python_exec=python_exec,
-        shard_count=fetch_us_shards,
-        shard_builder=lambda shard, of: [
-            python_exec,
-            "-m",
-            "application.cli.main_fetch_full_cache",
-            "--us-only",
-            "--skip-insiders",
-            "--no-parallel",
-            "--us-core-shard",
-            str(shard),
-            "--us-core-of",
-            str(of),
-        ],
-    )
-
-    _run_parallel_shards(
-        repo_root,
-        python_exec=python_exec,
-        shard_count=fetch_nonus_shards,
-        shard_builder=lambda shard, of: [
-            python_exec,
-            "-m",
-            "application.cli.main_fetch_full_cache",
-            "--nonus-only",
-            "--no-parallel",
-            "--nonus-shard",
-            str(shard),
-            "--nonus-of",
-            str(of),
-        ],
-    )
-
-    _run_cmd(
-        repo_root,
-        [
-            python_exec,
-            "-m",
-            "application.cli.main_fetch_full_cache",
-            "--only",
-            "US_INSIDERS",
-            "--no-parallel",
-        ],
-    )
-
+        # 6. Data Inspection (Intelligence Phase 2)
+        print("> Running Data Integrity Inspection (Flagging Only)")
+        self.runner.run_task(spec=TaskSpec(task_name="weekly_inspection", pipeline="inspect_data", params={
+            "walter_db": self.store.db_path,
+            "filings_db": "data/db/filings.sqlite",
+            "market_db": "data/db/market_snapshots.sqlite",
+            "limit": 1000
+        }))
+        print("<<< Walter Weekly Cycle Finished")
 
 def main(argv: Iterable[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Background update orchestrator for daily/weekly jobs.")
+    parser = argparse.ArgumentParser(description="Walter OS Orchestrator for Global Net-Net Scanner.")
     parser.add_argument(
         "mode",
         choices=["daily", "weekly", "all"],
         help="daily: FX+prices+shortlist, weekly: universe+ncav+full cache, all: weekly then daily.",
     )
-    parser.add_argument("--python", default=sys.executable, help="Python executable used for subcommands.")
     parser.add_argument("--root", default=str(Path(__file__).resolve().parent), help="Repository root path.")
     parser.add_argument("--universe-csv", default="data/tickers/global_full.csv")
+    parser.add_argument("--db", default="data/db/walter_os.sqlite", help="Path to Walter OS state DB.")
 
     parser.add_argument("--ncav-shards", type=int, default=2)
+    parser.add_argument("--ncav-regional", action="store_true", help="If set, detect and run regional *_full.csv files in parallel instead of sharding.")
     parser.add_argument("--fetch-us-shards", type=int, default=2)
     parser.add_argument("--fetch-nonus-shards", type=int, default=2)
 
@@ -210,10 +190,16 @@ def main(argv: Iterable[str] | None = None) -> None:
     if not repo_root.exists():
         raise SystemExit(f"Root does not exist: {repo_root}")
 
+    # Ensure DB parent exists
+    db_path = Path(args.db)
+    if not db_path.is_absolute():
+        db_path = (repo_root / db_path).resolve()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    walter = Walter(db_path=str(db_path))
+
     if args.mode in ("weekly", "all"):
-        run_weekly(
-            repo_root,
-            python_exec=args.python,
+        walter.run_weekly_cycle(
             universe_csv=args.universe_csv,
             ncav_shards=args.ncav_shards,
             fetch_us_shards=args.fetch_us_shards,
@@ -221,17 +207,15 @@ def main(argv: Iterable[str] | None = None) -> None:
             ncav_max_age_days=args.ncav_max_age_days,
             ncav_min_cache_interval_days=args.ncav_min_cache_interval_days,
             ncav_fetch_timeout=args.ncav_fetch_timeout,
+            ncav_regional=args.ncav_regional,
         )
 
     if args.mode in ("daily", "all"):
-        run_daily(
-            repo_root,
-            python_exec=args.python,
+        walter.run_daily_cycle(
             universe_csv=args.universe_csv,
             price_batch_size=args.price_batch_size,
             price_min_batch_interval=args.price_min_batch_interval,
         )
-
 
 if __name__ == "__main__":
     main()

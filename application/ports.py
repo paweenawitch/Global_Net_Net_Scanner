@@ -132,3 +132,20 @@ class ShortlistConfig:
     min_fs_age_days: int = 90
     prices_only: bool = False
     limit: Optional[int] = None
+
+
+# =========================
+# Screening (NEW)
+# =========================
+
+from domain.models.valuation_result import ValuationResult
+
+class ScreeningResultRepository(Protocol):
+    """Port: persist and retrieve finalized screening results (valuation + signals)."""
+    def save_results(self, results: List[ValuationResult], run_date: str) -> None:
+        """Persist a collection of valuation results for a specific run date."""
+        ...
+
+    def get_latest_results(self) -> List[ValuationResult]:
+        """Retrieve the latest valuation snapshot for each ticker."""
+        ...

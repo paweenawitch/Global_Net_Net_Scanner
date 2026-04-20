@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 from application.ports import PriceClient
-from infrastructure.repositories.json_price_cache_repository import JsonPriceCacheRepository
+from infrastructure.repositories.sqlite_price_repository import SqlitePriceRepository
 
 
 class CachedPriceClient(PriceClient):
@@ -14,7 +14,7 @@ class CachedPriceClient(PriceClient):
       symbol -> (price, asof)
     """
 
-    def __init__(self, repo: JsonPriceCacheRepository) -> None:
+    def __init__(self, repo: SqlitePriceRepository) -> None:
         self.repo = repo
 
     def latest_closes(

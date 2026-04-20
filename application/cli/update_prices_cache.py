@@ -13,7 +13,7 @@ from typing import Dict, Optional, Tuple, List, Any
 import yfinance as yf
 
 from application.ports import PriceClient, PricePoint, ShortlistUniverseRepository
-from infrastructure.repositories.json_price_cache_repository import JsonPriceCacheRepository
+from infrastructure.repositories.sqlite_price_repository import SqlitePriceRepository
 
 
 def _utc_now_iso() -> str:
@@ -39,7 +39,7 @@ class DualLogger:
 
 def _build_symbols_from_universe(universe_repo: ShortlistUniverseRepository) -> List[str]:
     # canonical mapping in your project
-    from tools.ncav_cache import to_yahoo  # uses your mapping
+    from infrastructure.sources.yahoo_source import to_yahoo_symbol as to_yahoo
 
     rows = universe_repo.load_tickers()
     syms: List[str] = []
@@ -91,7 +91,7 @@ def run(
     *,
     universe_repo: ShortlistUniverseRepository,
     price_client: PriceClient,
-    price_repo: JsonPriceCacheRepository,
+    price_repo: SqlitePriceRepository,
     batch_size: int,
     logger: DualLogger,
     limit: Optional[int],
@@ -180,7 +180,7 @@ def run(
             logger.write(f"[batch {bi}] done | ok={ok} none={none_count} failed_batches={failed_batches} | elapsed {elapsed:.2f}s")
 
     price_repo.put_many(points)
-    logger.write(f"Saved {len(points)} price points to {price_repo.cache_path}")
+    logger.write(f"Saved {len(points)} price points to {price_repo._store._db_path}")
 
     if quote_ccy_mode != "none" and cc_updates > 0:
         _save_quote_currency_cache(quote_ccy_cache_path, cc_map)
@@ -197,7 +197,7 @@ def run(
         "quote_ccy_mode": quote_ccy_mode,
         "quote_ccy_cache": str(quote_ccy_cache_path),
         "min_batch_interval_s": min_batch_interval_s,
-        "price_cache": str(price_repo.cache_path),
+        "price_cache": price_repo._store._db_path,
     }
     audit_path = Path(str(logger.log_path) + ".json")
     audit_path.write_text(json.dumps(audit, indent=2), encoding="utf-8")
@@ -207,47 +207,35 @@ def run(
     logger.write("--- update_prices_cache end ---")
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--csv", required=True, help="Path to universe CSV (absolute or project-relative)")
-    ap.add_argument("--batch-size", type=int, default=50, help="Keep small to reduce Yahoo flakiness")
-    ap.add_argument("--price-cache", type=str, default="cache/prices/latest.json")
-    ap.add_argument("--log-dir", type=str, default="logs")
-    ap.add_argument("--limit", type=int)
-    ap.add_argument(
-        "--quote-currency",
-        type=str,
-        default="none",  # ✅ safer daily default
-        choices=["none", "missing", "all"],
-        help="Fetch trading currency via yfinance Ticker().info (slow).",
-    )
-    ap.add_argument(
-        "--min-batch-interval",
-        type=float,
-        default=float(os.environ.get("YF_MIN_BATCH_INTERVAL", "1.2")),
-        help="Minimum seconds per batch (adaptive sleep).",
-    )
-    args = ap.parse_args()
-
+def run_cli(
+    *,
+    universe_csv: str,
+    batch_size: int = 50,
+    price_cache: str = "data/db/market_snapshots.sqlite",
+    log_dir: str = "logs",
+    limit: Optional[int] = None,
+    quote_currency: str = "none",
+    min_batch_interval: float = 1.2,
+) -> None:
     project_root = Path(__file__).resolve().parents[2]
 
-    csv_path = Path(args.csv)
+    csv_path = Path(universe_csv)
     if not csv_path.is_absolute():
         csv_path = (project_root / csv_path).resolve()
 
-    price_cache_path = Path(args.price_cache)
+    price_cache_path = Path(price_cache)
     if not price_cache_path.is_absolute():
         price_cache_path = (project_root / price_cache_path).resolve()
 
-    log_dir = Path(args.log_dir)
-    if not log_dir.is_absolute():
-        log_dir = (project_root / log_dir).resolve()
-    _ensure_dir(log_dir)
+    log_dir_path = Path(log_dir)
+    if not log_dir_path.is_absolute():
+        log_dir_path = (project_root / log_dir_path).resolve()
+    _ensure_dir(log_dir_path)
 
     quote_ccy_cache_path = project_root / "cache" / "prices" / "quote_currency.json"
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = log_dir / f"update_prices_cache_{ts}.log"
+    log_path = log_dir_path / f"update_prices_cache_{ts}.log"
     logger = DualLogger(log_path)
 
     logger.write(f"Project root: {project_root}")
@@ -256,21 +244,44 @@ def main() -> None:
 
     from infrastructure.repositories.csv_universe_loader_repository import CsvUniverseLoaderRepository
     from infrastructure.sources.yahoo_price_client import YahooPriceClient
+    from infrastructure.repositories.sqlite_price_repository import SqlitePriceRepository
 
-    universe_repo = CsvUniverseLoaderRepository(csv_path)
+    universe_repo = CsvUniverseLoaderRepository(csv_path=csv_path)
     price_client = YahooPriceClient()
-    price_repo = JsonPriceCacheRepository(cache_path=str(price_cache_path))
+    price_repo = SqlitePriceRepository(db_path=str(price_cache_path))
 
     run(
         universe_repo=universe_repo,
         price_client=price_client,
         price_repo=price_repo,
-        batch_size=args.batch_size,
+        batch_size=batch_size,
         logger=logger,
-        limit=args.limit,
+        limit=limit,
         quote_ccy_cache_path=quote_ccy_cache_path,
-        quote_ccy_mode=args.quote_currency,
-        min_batch_interval_s=args.min_batch_interval,
+        quote_ccy_mode=quote_currency,
+        min_batch_interval_s=min_batch_interval,
+    )
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--csv", required=True)
+    ap.add_argument("--batch-size", type=int, default=50)
+    ap.add_argument("--price-cache", type=str, default="data/db/market_snapshots.sqlite")
+    ap.add_argument("--log-dir", type=str, default="logs")
+    ap.add_argument("--limit", type=int)
+    ap.add_argument("--quote-currency", type=str, default="none", choices=["none", "missing", "all"])
+    ap.add_argument("--min-batch-interval", type=float, default=1.2)
+    args = ap.parse_args()
+
+    run_cli(
+        universe_csv=args.csv,
+        batch_size=args.batch_size,
+        price_cache=args.price_cache,
+        log_dir=args.log_dir,
+        limit=args.limit,
+        quote_currency=args.quote_currency,
+        min_batch_interval=args.min_batch_interval,
     )
 
 
