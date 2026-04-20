@@ -4,9 +4,12 @@ import logging
 import os
 import json
 import time
-from datetime import datetime, timedelta
+import re
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Dict, List, Optional, Any
 
+from application.ports import TickerSource
 import requests
 
 LOGGER = logging.getLogger("infrastructure.sources.us_sec")
@@ -52,10 +55,124 @@ SHARE_CONCEPTS_PRIORITY = [
     ("WeightedAverageNumberOfSharesOutstanding",        "shares"),
 ]
 
-class UsSecSource:
-    def __init__(self):
+import pandas as pd
+
+# Universe policy patterns
+BAD_NAME_PAT = re.compile(
+    r"("
+    r"\betf\b|exchange\s*traded\s*fund|"
+    r"\betn\b|exchange\s*traded\s*note|"
+    r"\bfund\b|\bportfolio\b|"
+    r"closed[-\s]*end|"
+    r"warrant|wts|rights?|unit|"
+    r"spac|acquisition|blank\s*check|trust"
+    r")",
+    re.IGNORECASE,
+)
+BAD_CODE_PAT = re.compile(r"(-WT|-WTS|-WS|-U|-UN|-RT|-R|\s+WTS?|\s+UNIT|\s+RT)$", re.IGNORECASE)
+
+class USSecSource(TickerSource):
+    market_code = "US"
+    source_label = "SEC EDGAR / filings"
+
+    def __init__(self, project_root: Path) -> None:
+        self.root = Path(project_root)
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": SEC_UA, "Accept-Encoding": "gzip, deflate"})
+
+    def fetch(self) -> pd.DataFrame:
+        """Fetch US ticker universe from SEC exchange list."""
+        EXCHANGE_TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
+        MUTUAL_FUND_TICKERS_URL = "https://www.sec.gov/files/company_tickers_mf.json"
+
+        LOGGER.info("Fetching SEC exchange tickers...")
+        r = self._session.get(EXCHANGE_TICKERS_URL, timeout=30)
+        r.raise_for_status()
+        exch_data = r.json()
+
+        LOGGER.info("Fetching SEC mutual fund symbols...")
+        r = self._session.get(MUTUAL_FUND_TICKERS_URL, timeout=30)
+        r.raise_for_status()
+        mf_data = r.json()
+        mf_symbols = self._build_mf_set(mf_data)
+
+        rows = self._build_rows_from_payload(exch_data)
+        
+        kept = []
+        for r in rows:
+            if self._classify_exclusion(r, mf_symbols) is None:
+                kept.append(r)
+
+        df = pd.DataFrame(kept)
+        if df.empty:
+            return df
+
+        df = df.dropna(subset=["ticker_base", "ticker"]).drop_duplicates("ticker_base")
+        df = df.dropna(subset=["cik"]).copy()
+
+        def sym_score(sym: str) -> int:
+            s = sym or ""
+            score = 0
+            if any(ch.isdigit() for ch in s): score += 10
+            if s.endswith("F"): score += 5
+            if s.endswith("Y"): score += 5
+            score += len(s)
+            return score
+
+        df["__score"] = df["ticker_base"].astype(str).map(sym_score)
+        df = df.sort_values(["cik", "__score", "ticker_base"]).groupby("cik", as_index=False).first()
+
+        selected = [
+            "instrument_id", "ticker", "ticker_base", "name", 
+            "country", "cik", "primary_listing_mic"
+        ]
+        return df[selected].sort_values("ticker").reset_index(drop=True)
+
+    def _build_mf_set(self, payload: dict) -> set[str]:
+        fields = payload.get("fields") or []
+        data = payload.get("data") or []
+        try:
+            idx = fields.index("symbol")
+            return {str(entry[idx]).strip().upper() for entry in data if len(entry) > idx and entry[idx]}
+        except (ValueError, IndexError):
+            return set()
+
+    def _build_rows_from_payload(self, payload: dict) -> list[dict]:
+        fields = payload.get("fields") or []
+        data = payload.get("data") or []
+        try:
+            idx_t = fields.index("ticker")
+            idx_n = fields.index("name")
+            idx_c = fields.index("cik")
+        except ValueError:
+            return []
+
+        rows = []
+        for entry in data:
+            if len(entry) <= max(idx_t, idx_n, idx_c): continue
+            ticker = str(entry[idx_t]).strip().upper()
+            if not ticker: continue
+            try: cik_int = int(entry[idx_c] or 0)
+            except: cik_int = 0
+            
+            rows.append({
+                "instrument_id": f"{ticker}.US",
+                "ticker_base": ticker,
+                "ticker": f"{ticker}.US",
+                "cik": str(cik_int).zfill(10) if cik_int > 0 else None,
+                "name": str(entry[idx_n]).strip(),
+                "country": "US",
+                "primary_listing_mic": "UNKNOWN"
+            })
+        return rows
+
+    def _classify_exclusion(self, row: dict, mf_symbols: set) -> str | None:
+        name = row.get("name", "")
+        code = row.get("ticker_base", "")
+        if code in mf_symbols: return "mutual_fund"
+        if BAD_NAME_PAT.search(name): return "name_pattern"
+        if BAD_CODE_PAT.search(code): return "ticker_pattern"
+        return None
 
     def fetch_core(self, ticker: str, cik: Optional[int] = None) -> Dict[str, Any]:
         if not cik:
@@ -215,7 +332,7 @@ class UsSecSource:
                 "country_iso": "US",
                 "sector": subs.get("sicDescription"),
                 "ids": {"cik": f"{cik:010d}"},
-                "generated_at": datetime.utcnow().isoformat() + "Z",
+                "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
                 "source": "SEC",
             },
             "financials": {

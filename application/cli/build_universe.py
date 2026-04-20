@@ -26,24 +26,14 @@ def _find_repo_root(start: Path) -> Path:
             return p
     return Path(__file__).resolve().parents[2]
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Build Net Net global universe (Clean Architecture).")
-    parser.add_argument("--root", type=str, default=None, help="Project root path (directory that contains /tools and /application).")
-    args = parser.parse_args()
-
-    if args.root:
-        project_root = Path(args.root).resolve()
+def run_cli(*, root: Optional[str] = None) -> None:
+    if root:
+        project_root = Path(root).resolve()
     else:
-        # Try CWD first (common for IDE runs on Windows)
-        project_root = _find_repo_root(Path.cwd())
+        project_root = Path(__file__).resolve().parents[2]
 
-    tools_dir = project_root / "tools" / "build_universe"
-    if not tools_dir.exists():
-        print(f"❌ Could not locate tools/build_universe under root: {project_root}")
-        print("   Tip: run with --root <path-to-your-repo-root>")
-        sys.exit(2)
-
-    repo = CsvUniverseWriterRepository(project_root)
+    from infrastructure.repositories.composite_universe_repository import CompositeUniverseRepository
+    repo = CompositeUniverseRepository(project_root)
     sources = [
         USSecSource(project_root),
         JPJpxSource(project_root),
@@ -52,7 +42,16 @@ def main() -> None:
     ]
     svc = BuildUniverseService(sources=sources, repo=repo)
     result = svc.run()
-    print(f"✅ Global universe built: {result['rows']} rows at {project_root / 'data' / 'tickers'}")
+    print(f"Global universe built: {result['rows']} rows at {project_root / 'data' / 'tickers'}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=str, default=None)
+    args = parser.parse_args()
+
+    run_cli(root=args.root)
+
 
 if __name__ == "__main__":
     main()

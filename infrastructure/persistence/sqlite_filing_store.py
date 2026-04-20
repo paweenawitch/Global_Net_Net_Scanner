@@ -94,6 +94,24 @@ class SqliteFilingStore:
                 """
             )
 
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS screening_snapshots (
+                    ticker TEXT,
+                    run_date TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    valuation_json TEXT NOT NULL,
+                    PRIMARY KEY (ticker, run_date)
+                );
+                """
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_screening_ticker ON screening_snapshots(ticker);"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_screening_date ON screening_snapshots(run_date);"
+            )
+
     def get_ncav_record(self, ticker: str) -> Optional[NcavRecord]:
         with self._connect() as con:
             row = con.execute(
@@ -217,3 +235,39 @@ class SqliteFilingStore:
                 "INSERT OR REPLACE INTO insider_snapshots (ticker, updated_at, insider_json) VALUES (?, ?, ?)",
                 (ticker, updated_at, _dumps(data))
             )
+
+    # --- Screening ---
+    def upsert_screening_snapshot(self, ticker: str, run_date: str, data: Dict[str, Any]) -> None:
+        from datetime import datetime, timezone
+        updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as con:
+            con.execute(
+                """
+                INSERT OR REPLACE INTO screening_snapshots (
+                    ticker, run_date, updated_at, valuation_json
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (ticker, run_date, updated_at, _dumps(data))
+            )
+
+    def get_latest_screening_snapshots(self) -> List[Dict[str, Any]]:
+        """Returns the most recent screening result for each ticker."""
+        query = """
+            SELECT s.*
+            FROM screening_snapshots s
+            INNER JOIN (
+                SELECT ticker, MAX(run_date) as max_date
+                FROM screening_snapshots
+                GROUP BY ticker
+            ) latest ON s.ticker = latest.ticker AND s.run_date = latest.max_date
+        """
+        with self._connect() as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute(query).fetchall()
+            results = []
+            for r in rows:
+                item = _loads(r["valuation_json"])
+                # Add run_date to the result for context
+                item["run_date"] = r["run_date"]
+                results.append(item)
+            return results

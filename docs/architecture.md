@@ -51,3 +51,9 @@ C4Context
 - **Application Layer**: Orchestrates use cases. Operates on Domain entities. Defines interfaces (Ports) that outer layers implement.
 - **Infrastructure Layer**: Implements SQLite persistent stores and API scrapers. Knows about HTTP, filesystems, database sessions.
 - **UI Layer**: Reaps the data, handles strictly presentation concerns displaying Domain deterministic outputs structurally.
+
+## Data Strategy: Yahoo as a Normalized Middleman
+For global markets (Japan, UK, HK, etc.), the project leverages **Yahoo Finance (yfinance)** as a pre-normalized data middleman.
+- **Why**: Yahoo performs the "heavy lifting" of mapping regional accounting standards (Japan GAAP, IFRS) to a standardized English language schema.
+- **Implication**: This eliminates the need for an internal manual translation layer for idiosyncratic global tags. The responsibility for field mapping resides in the **Infrastructure Layer** (e.g., `YahooSource`), which maps Yahoo's standard fields to our internal `NcavRecord`.
+

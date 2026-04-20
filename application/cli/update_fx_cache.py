@@ -150,7 +150,7 @@ def _scan_currencies_from_db(
 
     # 1. FS currencies from cached records
     con = store._connect()
-    rows = con.execute("SELECT ncav_json FROM ncav_records").fetchall()
+    rows = con.execute("SELECT financials_json FROM ncav_records").fetchall()
     import json
     for r in rows:
         try:
@@ -178,46 +178,42 @@ def _scan_currencies_from_db(
 # Main job
 # -------------------------
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--cache-dir", type=str, default="", help="NCAV cache dir (default: tools.ncav_cache.CACHE)")
-    ap.add_argument("--out", type=str, default="cache/fx/usd_per_ccy.json", help="Output FX cache path (project-relative ok)")
-    ap.add_argument("--log-dir", type=str, default="logs")
-    ap.add_argument("--include-targets", action="store_true", help="Also include implied trading currencies from ticker suffix")
-    ap.add_argument("--limit-files", type=int, default=None, help="Limit number of NCAV cache files scanned (debug)")
-    ap.add_argument("--min-cache-interval-days", type=int, default=1,
-                    help="Skip updating FX cache if output file was updated within N days (0 disables).")
-    ap.add_argument("--force", action="store_true", help="Ignore min-cache-interval gate")
-    args = ap.parse_args()
-
+def run_cli(
+    *,
+    out: str = "cache/fx/usd_per_ccy.json",
+    include_targets: bool = False,
+    min_cache_interval_days: int = 1,
+    force: bool = False,
+    log_dir: str = "logs",
+) -> None:
     project_root = Path(__file__).resolve().parents[2]
 
     # Resolve DB path
     db_path = str(project_root / "data" / "db" / "filings.sqlite")
 
     # Resolve outputs
-    out_path = Path(args.out)
+    out_path = Path(out)
     if not out_path.is_absolute():
         out_path = (project_root / out_path).resolve()
 
-    log_dir = Path(args.log_dir)
-    if not log_dir.is_absolute():
-        log_dir = (project_root / log_dir).resolve()
-    _ensure_dir(log_dir)
+    log_dir_path = Path(log_dir)
+    if not log_dir_path.is_absolute():
+        log_dir_path = (project_root / log_dir_path).resolve()
+    _ensure_dir(log_dir_path)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = log_dir / f"update_fx_cache_{ts}.log"
+    log_path = log_dir_path / f"update_fx_cache_{ts}.log"
     logger = DualLogger(log_path)
 
     logger.write(f"Project root: {project_root}")
     logger.write(f"DB Path: {db_path}")
     logger.write(f"FX out: {out_path}")
-    logger.write(f"include_targets={args.include_targets}")
-    logger.write(f"min_cache_interval_days={args.min_cache_interval_days} force={args.force}")
+    logger.write(f"include_targets={include_targets}")
+    logger.write(f"min_cache_interval_days={min_cache_interval_days} force={force}")
 
     # Optional: skip if FX cache recently updated
-    if not args.force:
-        skip, reason = _should_skip_due_to_recent_fx_cache(out_path, args.min_cache_interval_days)
+    if not force:
+        skip, reason = _should_skip_due_to_recent_fx_cache(out_path, min_cache_interval_days)
         if skip:
             logger.write(f"SKIP: {reason} (use --force to override)")
             logger.write("--- update_fx_cache end ---")
@@ -226,17 +222,16 @@ def main() -> None:
 
     needed_ccy, missing = _scan_currencies_from_db(
         db_path,
-        include_targets=args.include_targets,
+        include_targets=include_targets,
         logger=logger,
     )
 
     needed_list = sorted(needed_ccy)
     logger.write(f"Currencies needed (normalized for fetch): {len(needed_list)}")
-    logger.write(f"Sample: {needed_list[:30]}{'...' if len(needed_list) > 30 else ''}")
 
     # Fetch FX
     from infrastructure.sources.yahoo_fx_provider import YahooFxProvider
-    fx = YahooFxProvider()
+    fx = YahooFxProvider(out_path)
 
     started = _utc_now_iso()
     fx_map = fx.usd_per_ccy(needed_list)
@@ -251,42 +246,41 @@ def main() -> None:
         "started_utc": started,
         "source": "yahoo",
         "units": "usd_per_ccy",
-        "notes": {
-            "aliases": _CCY_ALIAS,
-            "alias_behavior": "fetch normalized currency; publish both CNY and CNH when either is available",
-        },
-        "inputs": {
-            "db_path": db_path,
-            "include_targets": args.include_targets,
-            "missing_or_bad_records": missing,
-        },
-        "requested_ccy": needed_list,
-        "returned_ccy": sorted(fx_map.keys()),
         "rates": dict(sorted(fx_map.items())),
     }
 
     _atomic_write_json(out_path, payload)
 
-    missing_ccy = sorted(set(needed_list) - set([c for c in fx_map.keys()]))
     audit = {
         "finished_utc": _utc_now_iso(),
         "out": str(out_path),
         "requested_ccy": len(needed_list),
         "returned_ccy": len(fx_map),
-        "missing_ccy": missing_ccy[:200],
         "log": str(log_path),
     }
     audit_path = out_path.with_suffix(".audit.json")
     _atomic_write_json(audit_path, audit)
 
-    logger.write("--- SUMMARY ---")
-    logger.write(f"requested_ccy={audit['requested_ccy']}")
-    logger.write(f"returned_ccy={audit['returned_ccy']}")
-    if audit["missing_ccy"]:
-        logger.write(f"missing_ccy_sample={audit['missing_ccy'][:20]}")
-    logger.write(f"wrote={out_path}")
-    logger.write(f"audit={audit_path}")
+    logger.write(f"Done. Wrote={out_path}")
     logger.write("--- update_fx_cache end ---")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", type=str, default="cache/fx/usd_per_ccy.json")
+    ap.add_argument("--include-targets", action="store_true")
+    ap.add_argument("--min-cache-interval-days", type=int, default=1)
+    ap.add_argument("--force", action="store_true")
+    ap.add_argument("--log-dir", type=str, default="logs")
+    args = ap.parse_args()
+
+    run_cli(
+        out=args.out,
+        include_targets=args.include_targets,
+        min_cache_interval_days=args.min_cache_interval_days,
+        force=args.force,
+        log_dir=args.log_dir,
+    )
 
 
 if __name__ == "__main__":

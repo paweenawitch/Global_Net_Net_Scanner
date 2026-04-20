@@ -8,8 +8,9 @@ from application.screening_service import ScreeningService
 from infrastructure.repositories.sqlite_shortlist_repository import SqliteShortlistRepository
 from infrastructure.repositories.sec_core_fs_repository import SecCoreFsRepository
 from infrastructure.repositories.sqlite_insider_repository import SqliteInsiderRepository
+from infrastructure.repositories.sqlite_screening_repository import SqliteScreeningRepository
 from infrastructure.sources.yahoo_source import YahooSource # For FX if needed
-from infrastructure.fx.exchangerate_host_provider import ExchangerateHostFxProvider
+from infrastructure.sources.yahoo_fx_provider import YahooFxProvider
 from infrastructure.reporting.valuation_report_writer import CsvJsonValuationWriter
 
 def main() -> None:
@@ -31,10 +32,11 @@ def main() -> None:
     core_repo = SecCoreFsRepository(db_path=db_path)
     insider_repo = SqliteInsiderRepository(db_path=db_path)
     
-    # FX Provider (can be refactored further later, but for now we use existing one)
-    fx_provider = ExchangerateHostFxProvider(cache_file=fx_cache)
+    # FX Provider: Consolidated to Yahoo Finance (Spot-Only)
+    fx_provider = YahooFxProvider(cache_file=fx_cache)
     
     writer = CsvJsonValuationWriter(public_dir=public_dir, internal_dir=internal_dir)
+    screening_repo = SqliteScreeningRepository(db_path=db_path)
 
     # Application service
     service = ScreeningService(
@@ -43,6 +45,7 @@ def main() -> None:
         insider_repo=insider_repo,
         fx_provider=fx_provider,
         writer=writer,
+        screening_repo=screening_repo,
     )
 
     logging.info("Starting screening run from SQLite DB...")

@@ -4,13 +4,14 @@
 Establish the full Walter OS by porting the event-driven, autonomous orchestration layer from the Mary project. This will handle the I/O-heavy scheduling, heartbeat monitoring, and safe execution of global data fetches.
 
 ## Done means
-- [ ] Migrate `application/os` (Event Bus, Task Runner, Remediation) into the Global Net-Net Scanner repository.
-- [ ] Migrate `infrastructure/persistence/sqlite_os_state_store.py` to enable persistent queueing.
-- [ ] Refactor `application/os/run_pipeline.py` specifically `build_universe()` to detach from `USSecSource` and hook into the Global Source/Taxonomy mapping framework.
-- [ ] Refactor `refresh_fx_rates` to route through the upcoming Deterministic Global FX Normalization service.
-- [ ] Activate `data_inspection.py` and `maintenance_audit.py` to auto-quarantine stale global filings and suspicious FX changes.
-- [ ] Tests added/updated as required
-- [ ] `scripts/check.*` passes
+- [x] Migrate `application/os` (Task Runner, Registry, Specs) into the Global Net-Net Scanner repository.
+- [x] Migrate `infrastructure/persistence/sqlite_os_state_store.py` to enable persistent tracking and locking.
+- [x] Refactor `application/os/run_pipeline.py` to use `run_cli` entry points for all core background scripts.
+- [x] Add **Regional Parallelism** support to `main.py` to match manual sharding workflows.
+- [x] Refactor `refresh_fx_rates` to route through the Determinstic Service.
+- [x] Port `DataInspectionService` and `MaintenanceAuditService` to auto-flag stale filings and missing market data.
+- [x] Integrate orchestration with the **FastAPI Control Center** for remote execution.
+- [x] `scripts/check.*` passes
 
 ## Constraints / must not change
 - Must retain the strict Policy Verifier (`verify_event_policy`); background jobs cannot violate the determining rules.

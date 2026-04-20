@@ -77,30 +77,41 @@ class CachedFxProvider:
         return out
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--tickers_csv", type=str, default=str(CACHE_ROOT / "data" / "tickers" / "global_full.csv"))
-    ap.add_argument("--price_cache", type=str, default=str(CACHE_ROOT / "data" / "db" / "market_snapshots.sqlite"))
-    ap.add_argument("--fx_cache", type=str, default=str(CACHE_ROOT / "cache" / "fx" / "usd_per_ccy.json"))
+def run_cli(
+    *,
+    tickers_csv: str,
+    price_cache: str = "data/db/market_snapshots.sqlite",
+    fx_cache: str = "cache/fx/usd_per_ccy.json",
+    max_workers: int = 3,
+    fetch_timeout: int = 12,
+    prices_batch: int = 40,
+    limit: Optional[int] = None,
+    max_fs_age_days: int = 730,
+    min_fs_age_days: int = 90,
+    verbose: int = 1,
+    log_every: int = 10,
+) -> None:
+    # Resolve project root:
+    project_root = Path(__file__).resolve().parents[2]
 
-    ap.add_argument("--max-workers", type=int, default=3)
-    ap.add_argument("--fetch-timeout", type=int, default=12)
-    ap.add_argument("--prices-batch", type=int, default=40)
-    ap.add_argument("--limit", type=int)
+    # Resolve paths
+    tickers_csv_path = Path(tickers_csv)
+    if not tickers_csv_path.is_absolute():
+        tickers_csv_path = (project_root / tickers_csv_path).resolve()
 
-    # Cache-only by design; we keep this flag but force it on
-    ap.add_argument("--max-fs-age-days", type=int, default=730)
-    ap.add_argument("--min-fs-age-days", type=int, default=90)
-    ap.add_argument("--verbose", "-v", action="count", default=1,
-                    help="-v INFO, -vv DEBUG, -vvv TRACE-like (DEBUG+extra)")
-    ap.add_argument("--log-every", type=int, default=10, help="log fundamentals progress every N tickers")
-    args = ap.parse_args()
+    price_cache_path = Path(price_cache)
+    if not price_cache_path.is_absolute():
+        price_cache_path = (project_root / price_cache_path).resolve()
+
+    fx_cache_path = Path(fx_cache)
+    if not fx_cache_path.is_absolute():
+        fx_cache_path = (project_root / fx_cache_path).resolve()
 
     # Logging setup
     level = logging.WARNING
-    if args.verbose == 1:
+    if verbose == 1:
         level = logging.INFO
-    elif args.verbose >= 2:
+    elif verbose >= 2:
         level = logging.DEBUG
     logging.basicConfig(level=level, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
     logger = logging.getLogger("shortlist-cache-only")
@@ -108,34 +119,66 @@ def main():
 
     from infrastructure.repositories.sqlite_universe_repository import SqliteUniverseRepository
     from infrastructure.repositories.ncav_cache_repository import NcavCacheRepository
+    from infrastructure.repositories.sqlite_price_repository import SqlitePriceRepository
+    from infrastructure.sources.cached_price_client import CachedPriceClient
+    from infrastructure.repositories.sqlite_shortlist_repository import SqliteShortlistRepository
 
-    universe = SqliteUniverseRepository(db_path=str(args.price_cache).replace("market_snapshots", "filings"))
+    universe = SqliteUniverseRepository(db_path=str(price_cache_path).replace("market_snapshots", "filings"))
     fundamentals = NcavCacheRepository()
 
     # ✅ Cached prices
-    price_repo = SqlitePriceRepository(db_path=str(args.price_cache))
+    price_repo = SqlitePriceRepository(db_path=str(price_cache_path))
     prices = CachedPriceClient(price_repo)
 
     # ✅ Cached FX (no network)
-    fx_rates = _load_fx_cache(Path(args.fx_cache))
+    fx_rates = _load_fx_cache(fx_cache_path)
     fx = CachedFxProvider(fx_rates)
 
-    from infrastructure.repositories.sqlite_shortlist_repository import SqliteShortlistRepository
-    out = SqliteShortlistRepository(db_path=str(args.price_cache).replace("market_snapshots", "filings"))
+    out = SqliteShortlistRepository(db_path=str(price_cache_path).replace("market_snapshots", "filings"))
 
-    svc = BuildShortlistService(universe, fundamentals, prices, fx, out, logger=logger, log_every=args.log_every)
+    svc = BuildShortlistService(universe, fundamentals, prices, fx, out, logger=logger, log_every=log_every)
     cfg = ShortlistConfig(
-        max_workers=args.max_workers,
-        fetch_timeout=args.fetch_timeout,
-        prices_batch=args.prices_batch,
-        max_fs_age_days=args.max_fs_age_days,
-        min_fs_age_days=args.min_fs_age_days,
+        max_workers=max_workers,
+        fetch_timeout=fetch_timeout,
+        prices_batch=prices_batch,
+        max_fs_age_days=max_fs_age_days,
+        min_fs_age_days=min_fs_age_days,
         prices_only=True,  # ✅ FORCE cache-only fundamentals
-        limit=args.limit,
+        limit=limit,
     )
     meta = svc.run(cfg)
     logger.info("Shortlist done → %s", meta["outputs"]["ncav_shortlist_csv"])
     print("Shortlist done ->", meta["outputs"]["ncav_shortlist_csv"])
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--tickers_csv", type=str, default="data/tickers/global_full.csv")
+    ap.add_argument("--price_cache", type=str, default="data/db/market_snapshots.sqlite")
+    ap.add_argument("--fx_cache", type=str, default="cache/fx/usd_per_ccy.json")
+    ap.add_argument("--max-workers", type=int, default=3)
+    ap.add_argument("--fetch-timeout", type=int, default=12)
+    ap.add_argument("--prices-batch", type=int, default=40)
+    ap.add_argument("--limit", type=int)
+    ap.add_argument("--max-fs-age-days", type=int, default=730)
+    ap.add_argument("--min-fs-age-days", type=int, default=90)
+    ap.add_argument("--verbose", "-v", action="count", default=1)
+    ap.add_argument("--log-every", type=int, default=10)
+    args = ap.parse_args()
+
+    run_cli(
+        tickers_csv=args.tickers_csv,
+        price_cache=args.price_cache,
+        fx_cache=args.fx_cache,
+        max_workers=args.max_workers,
+        fetch_timeout=args.fetch_timeout,
+        prices_batch=args.prices_batch,
+        limit=args.limit,
+        max_fs_age_days=args.max_fs_age_days,
+        min_fs_age_days=args.min_fs_age_days,
+        verbose=args.verbose,
+        log_every=args.log_every,
+    )
 
 
 if __name__ == "__main__":

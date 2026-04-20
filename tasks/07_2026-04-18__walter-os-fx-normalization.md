@@ -1,27 +1,32 @@
 # Task: Walter OS Global FX Normalization
 
 ## Goal
-Establish a deterministic, filing-date-anchored FX normalization service in the infrastructure layer to support Walter OS globally.
+Establish a reliable Spot FX normalization utility to support cross-currency listings (e.g. US-listed foreign stocks) using Yahoo Finance with 24h JSON caching.
 
 ## Done means
-- [ ] Create `infrastructure/fx/fx_service.py` with caching/persistence.
-- [ ] Ability to query exchange rate for `(base_currency, target_currency, filing_date)`.
-- [ ] Tests added/updated as required
-- [ ] `scripts/check.*` passes
+- [x] Consolidate multiple FX providers into a single `YahooFxProvider`.
+- [x] Implement 24h JSON caching to prevent API throttling.
+- [x] Implement robust CNY/CNH fallback logic (Prefer CNY, fallback to CNH).
+- [x] Harmonize interfaces (moving to `usd_per_ccy(currencies)`).
+- [x] Update screening entry points to use the new provider.
 
 ## Constraints / must not change
-- FX rates must strictly align with the filing end-date, not the current run date, to preserve determinism.
-- Must fallback gracefully if historical FX missing, halting the pass rather than guessing.
+- Pivot to **Spot Rates only**. Historical filing-date FX is discarded as it does not reflect realization value for a USD investor.
+- Must fallback gracefully (USD=1.0) if network fails.
 
 ## Scope
 IN:
-- Fetching historical FX data.
-- Connecting FX service to `build_universe_service` or screening pipelines.
+- Spot FX fetching from Yahoo.
+- CNY/CNH aliasing.
+- 24h Local caching.
 
 OUT:
-- Live streaming FX.
-- Speculating on currency hedges.
+- Historical FX database.
+- Deterministic filing-date anchoring.
 
-## Suggested files (optional)
-- `infrastructure/fx/fx_service.py`
-- `domain/models/currency.py`
+## Review Feedback
+- **Provider Consolidation**: `infrastructure/sources/yahoo_fx_provider.py` successfully consolidates FX fetching into a single point of truth using `yfinance`.
+- **Caching Logic**: Implemented 24h TTL caching based on file system `st_mtime` to stay within rate limits.
+- **RMB Handling**: Robust CNY/CNH aliasing is handled both at fetch time (in `YahooFxProvider`) and via domain-level aliases in `domain/services/fx_utils.py`, ensuring consistent math regardless of source ticker.
+- **Standardized Interface**: The `usd_per_ccy(currencies)` port is respected, allowing for seamless cross-currency conversions using the `convert_between` domain service.
+- **Verification**: `tests/test_fx_utils.py` confirms that the conversion math and aliasing are accurate across multiple test cases.

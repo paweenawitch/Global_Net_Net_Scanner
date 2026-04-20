@@ -78,16 +78,17 @@ def _norm_date(x) -> Optional[str]:
 def _pick_row(df: pd.DataFrame, names: List[str]) -> Optional[pd.Series]:
     if df is None or df.empty: return None
     def norm(s: str) -> str:
-        return re.sub(r"[^\w]", "", s.strip().lower())
+        return re.sub(r"[^a-z0-9]", "", s.strip().lower())
     
     idxmap = {norm(str(i)): i for i in df.index}
     synonyms = {
-        "totalcurrentassets": ["totalcurrentassets","currentassets","currentassetstotal"],
-        "totalliabilities": ["totalliabilities","totalliab","liabilitiestotal"],
-        "totalcurrentliabilities": ["totalcurrentliabilities","currentliabilities"],
-        "totalnoncurrentliabilities": ["totalnoncurrentliabilities","noncurrentliabilities"],
-        "totalassets": ["totalassets"],
+        "totalcurrentassets": ["totalcurrentassets", "currentassets", "currentassetstotal", "totalcurrentasset"],
+        "totalliabilities": ["totalliabilities", "totalliab", "liabilitiestotal", "totalliabliabilities", "totalliabs"],
+        "totalcurrentliabilities": ["totalcurrentliabilities", "currentliabilities", "totalcurrentliab", "currentliab"],
+        "totalnoncurrentliabilities": ["totalnoncurrentliabilities", "noncurrentliabilities", "totalnoncurrliab"],
+        "totalassets": ["totalassets", "totalasset"],
         "workingcapital": ["workingcapital"],
+        "sharesoutstanding": ["sharesoutstanding", "totalcommonsharesoutstanding", "basicsharesoutstanding"],
     }
     
     expanded = []
@@ -149,6 +150,70 @@ class YahooSource:
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
 
+    def fetch_full_filings(self, house_ticker: str) -> Dict[str, Any]:
+        """Fetch all periods and build a core filings object (similar to USSecSource)."""
+        y_sym = to_yahoo_symbol(house_ticker)
+        LOGGER.info(f"Fetching full Yahoo filings for {house_ticker} ({y_sym})")
+        T = yf.Ticker(y_sym)
+
+        # 1. Statements
+        _INFO_BUCKET.wait()
+        try: bs_a = yahoo_retry(lambda: T.balance_sheet)
+        except Exception: bs_a = pd.DataFrame()
+        _INFO_BUCKET.wait()
+        try: bs_q = yahoo_retry(lambda: T.quarterly_balance_sheet)
+        except Exception: bs_q = pd.DataFrame()
+
+        # 2. Info / Meta
+        _INFO_BUCKET.wait()
+        try:
+            info = yahoo_retry(lambda: T.info or {})
+            ccy = str(info.get("financialCurrency") or info.get("currency") or "USD").upper()
+        except Exception:
+            info = {}
+            ccy = "USD"
+
+        a_periods = _frame_to_periods(bs_a, ccy, limit=6)
+        q_periods = _frame_to_periods(bs_q, ccy, limit=4)
+        both = sorted(a_periods + q_periods, key=lambda p: (p.get("date") or ""), reverse=True)
+
+        # 3. Shares mapping
+        shares_out = self._fetch_shares(T)
+        shares_series = self._fetch_shares_series(y_sym, T)
+        both, latest_shares, _ = self._map_shares_to_periods(both, shares_series, shares_out)
+
+        # 4. Derived latest
+        latest = {}
+        if both:
+            p = both[0]
+            b = p.get("balance") or {}
+            ca = (b.get("assets_current") or {}).get("val")
+            tl = (b.get("liab_total") or {}).get("val")
+            sh = (b.get("shares_out") or {}).get("val")
+            ncav = (ca - tl) if (ca is not None and tl is not None) else None
+            latest = {
+                "date": p["date"],
+                "ncav": ncav,
+                "ncav_ps": (ncav / sh) if (ncav and sh) else None,
+            }
+
+        return {
+            "meta": {
+                "schema_version": "core.v1",
+                "ticker": house_ticker,
+                "name": info.get("longName"),
+                "country_iso": (info.get("country") or "").upper(),
+                "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
+                "source": "yfinance",
+                "y_symbol": y_sym
+            },
+            "financials": {
+                "annual": {"periods": a_periods},
+                "quarterly": {"periods": q_periods},
+            },
+            "derived": {"latest": latest}
+        }
+
     def fetch_ncav_record(self, house_ticker: str) -> NcavRecord:
         y_sym = to_yahoo_symbol(house_ticker)
         LOGGER.info(f"Fetching Yahoo fundamentals for {house_ticker} ({y_sym})")
@@ -176,14 +241,11 @@ class YahooSource:
             ccy = "USD"
             
         # 4. Selection Logic
-        # For NCAV record, we mainly care about the newest viable one.
-        # But we'll also preserve the full list for deeper analysis if needed.
         a_periods = _frame_to_periods(bs_a, ccy, limit=6)
         q_periods = _frame_to_periods(bs_q, ccy, limit=4)
         both = sorted(a_periods + q_periods, key=lambda p: (p.get("date") or ""), reverse=True)
         
-        # Robust shares mapping
-        info_shares = shares_out # from initial fetch
+        info_shares = shares_out
         shares_series = self._fetch_shares_series(y_sym, T)
         both, latest_shares, _ = self._map_shares_to_periods(both, shares_series, info_shares)
         
@@ -193,11 +255,9 @@ class YahooSource:
         tl = comp.get("liab_total")
         ncav = (ca - tl) if (ca is not None and tl is not None) else None
         
-        # shares_out for the selected period
         period_shares = comp.get("shares_out")
         ncav_ps = (ncav / period_shares) if (ncav is not None and period_shares and period_shares > 0) else None
         
-        # Calculate sig and staleness
         data_age_days = None
         if sel_date:
             try:
@@ -237,7 +297,6 @@ class YahooSource:
         return None
 
     def _fetch_shares_series(self, y_symbol: str, T: yf.Ticker) -> Optional[pd.Series]:
-        # 1. Fundamentals timeseries (query2)
         try:
             _JSON_BUCKET.wait()
             url = f"https://query2.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/{y_symbol}"
@@ -264,7 +323,6 @@ class YahooSource:
                     return s[~s.index.duplicated(keep="last")]
         except Exception: pass
 
-        # 2. yfinance fallbacks
         try:
             _INFO_BUCKET.wait()
             s = yahoo_retry(lambda: T.get_shares_full())
@@ -281,7 +339,6 @@ class YahooSource:
             dt = pd.to_datetime(p["date"])
             val = None
             if series is not None and not series.empty:
-                # nearest within 90 days
                 before = series.loc[:dt]
                 after = series.loc[dt:]
                 cand = []
@@ -294,7 +351,7 @@ class YahooSource:
             
             if val is None: val = info_shares
             if val:
-                p["balance"]["shares_out"] = val
+                p["balance"]["shares_out"] = {"val": val, "unit": "shares"}
         
         return periods, latest_shares, {}
 
@@ -305,18 +362,17 @@ class YahooSource:
             if dt < cutoff: continue
             
             b = p.get("balance") or {}
-            ca = b.get("assets_current")
-            tl = b.get("liab_total")
-            so = b.get("shares_out")
+            ca = (b.get("assets_current") or {}).get("val")
+            tl = (b.get("liab_total") or {}).get("val")
+            so = (b.get("shares_out") or {}).get("val")
             
             if ca is not None and tl is not None and so and so > 0:
-                # Return normalized values for the model
                 return p["date"], {"assets_current": ca, "liab_total": tl, "shares_out": so}, "mixed"
         
         return None, {}, None
 
     def fetch_insiders(self, house_ticker: str) -> Dict[str, Any]:
-        """Schema-only stub for now, matching legacy non_us_fetch_companyfact.py."""
+        """Schema-only stub for now."""
         return {
             "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds") + "Z",
             "buys_count": 0,

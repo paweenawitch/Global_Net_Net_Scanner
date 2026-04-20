@@ -1,7 +1,10 @@
-# Task: Walter OS Market-Specific Hard Vetoes
+# Task: Walter OS Market-Specific Hard Vetoes [DEPRECATED]
 
 ## Goal
-Expand the "Universal Vetoes" to include regional traps, like Keiretsu cross-holdings in Japan.
+[DEPRECATED] Expand the "Universal Vetoes" to include regional traps, like Keiretsu cross-holdings in Japan.
+
+## Status: REJECTED
+As of 2026-04-20, the decision was made to **not** implement complex market-specific veto logic or regional risk flagging. The project will maintain a strictly deterministic, fact-based approach, leaving "Risk Interpretation" to the human analyst.
 
 ## Done means
 - [ ] Define the interface for market-specific vetoes extending the universal veto concept.
@@ -11,17 +14,5 @@ Expand the "Universal Vetoes" to include regional traps, like Keiretsu cross-hol
 - [ ] `scripts/check.*` passes
 
 ## Constraints / must not change
-- Must not override or bypass the core Universal Owner-Style Vetoes.
-- Must execute deterministically.
-
-## Scope
-IN:
-- `domain/models/vetoes.py` or similar veto domain logic.
-- Region-specific logic modules.
-
-OUT:
-- Vetoing based on qualitative or predictive LLM logic.
-
-## Suggested files (optional)
-- `domain/models/vetoes.py`
-- `domain/playbooks/veto_engine.py`
+- Core Universal Vetoes must remain the only "Hard" removal layer.
+- Ensure Walter OS continues to flag data *health* without making *investment risk* judgments.

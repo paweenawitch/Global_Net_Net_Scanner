@@ -6,15 +6,16 @@ from typing import List, Dict, Any, Optional
 from domain.models.fundamentals import NcavRecord
 from infrastructure.persistence.sqlite_filing_store import SqliteFilingStore
 from infrastructure.sources.yahoo_source import YahooSource
-from infrastructure.sources.us_sec_source import UsSecSource
+from infrastructure.sources.us_sec_source import USSecSource
 
 LOGGER = logging.getLogger("application.fundamentals")
 
 class BuildFundamentalsService:
-    def __init__(self, db_path: str = "data/db/filings.sqlite") -> None:
-        self._store = SqliteFilingStore(db_path)
+    def __init__(self, project_root: Path, db_path: str = "data/db/filings.sqlite") -> None:
+        self.root = project_root
+        self._store = SqliteFilingStore(str(self.root / db_path))
         self._yahoo = YahooSource()
-        self._sec = UsSecSource()
+        self._sec = USSecSource(self.root)
 
     def update_ncav_cache(self, tickers: List[str], force: bool = False) -> None:
         """Update NcavRecords (Step 2 fundamentals) for a list of tickers."""

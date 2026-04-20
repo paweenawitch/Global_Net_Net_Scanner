@@ -124,6 +124,7 @@ def run(
     mics: Optional[Set[str]],
     shard: int,
     of: int,
+    project_root: Path,
 ) -> None:
     from application.build_fundamentals_service import BuildFundamentalsService
     from infrastructure.persistence.sqlite_filing_store import SqliteFilingStore
@@ -131,8 +132,8 @@ def run(
     today = date.today()
     rows = universe_repo.load_tickers()
     
-    store = SqliteFilingStore("data/db/filings.sqlite")
-    service = BuildFundamentalsService()
+    store = SqliteFilingStore(str(Path(project_root) / "data/db/filings.sqlite"))
+    service = BuildFundamentalsService(project_root)
 
     # apply filters first (country/MIC)
     if countries is not None or mics is not None:
@@ -209,80 +210,101 @@ def run(
                 f"skipped_fresh_stmt={skipped_fresh_stmt} skipped_missing={skipped_missing} failed={failed}"
             )
 
-    audit_path = logger.log_path.with_suffix(".json")
+    shortlist_path = project_root / "data/tickers/ncav_shortlist.csv"
     # Fix: Audit object was moved out of loop but used at end. 
     # I'll just skip audit for now or keep it simple.
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--csv", required=True, help="Path to universe CSV (absolute or project-relative)")
-    ap.add_argument("--max-age-days", type=int, default=120)
-    ap.add_argument("--min-cache-interval-days", type=int, default=7,
-                    help="Skip refetch if cache file mtime is within N days (0 disables).")
-    ap.add_argument("--fetch-timeout", type=int, default=25)
-    ap.add_argument("--limit", type=int, default=None)
-
-    ap.add_argument("--country", action="append", default=[],
-                    help="Filter by country code (repeatable). Example: --country US --country JP")
-    ap.add_argument("--mic", action="append", default=[],
-                    help="Filter by MIC (repeatable). Example: --mic XNAS --mic XHKG")
-
-    ap.add_argument("--force", action="store_true",
-                    help="Ignore min-cache-interval gate when statement is stale/missing.")
-    ap.add_argument("--force-all", action="store_true",
-                    help="Refresh everything selected (ignores statement age AND cache interval).")
-    ap.add_argument("--shard", type=int, default=1, help="Shard index (1-based).")
-    ap.add_argument("--of", type=int, default=1, help="Total number of shards.")
-
-    ap.add_argument("--verbose", action="store_true", help="Log per-ticker SKIP lines too")
-    ap.add_argument("--log-dir", type=str, default="logs", help="Directory for logs (project-relative)")
-    args = ap.parse_args()
-
-    if args.shard < 1 or args.of < 1:
-        raise SystemExit("--shard and --of must both be >= 1")
-    if args.shard > args.of:
-        raise SystemExit("--shard must be <= --of")
-
+def run_cli(
+    *,
+    universe_csv: str,
+    max_age_days: int = 120,
+    min_cache_interval_days: int = 7,
+    fetch_timeout_s: int = 25,
+    limit: Optional[int] = None,
+    country: List[str] = [],
+    mic: List[str] = [],
+    force: bool = False,
+    force_all: bool = False,
+    shard: int = 1,
+    of: int = 1,
+    verbose: bool = False,
+    log_dir: str = "logs",
+) -> None:
     # Resolve project root:
     project_root = Path(__file__).resolve().parents[2]
 
-    csv_path = Path(args.csv)
+    csv_path = Path(universe_csv)
     if not csv_path.is_absolute():
         csv_path = (project_root / csv_path).resolve()
 
-    log_dir = Path(args.log_dir)
-    if not log_dir.is_absolute():
-        log_dir = (project_root / log_dir).resolve()
-    _ensure_dir(log_dir)
+    log_dir_path = Path(log_dir)
+    if not log_dir_path.is_absolute():
+        log_dir_path = (project_root / log_dir_path).resolve()
+    _ensure_dir(log_dir_path)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    log_path = log_dir / f"update_ncav_cache_{ts}.log"
+    log_path = log_dir_path / f"update_ncav_cache_{ts}.log"
     logger = DualLogger(log_path=log_path)
 
-    countries, mics = _extract_filters(args)
+    countries = {c.strip().upper() for c in country if c and c.strip()} if country else None
+    mics = {m.strip().upper() for m in mic if m and m.strip()} if mic else None
 
     logger.write(f"Project root: {project_root}")
     logger.write(f"Universe CSV:  {csv_path}")
-    logger.write(f"country={countries} mic={mics}")
 
-    from infrastructure.repositories.sqlite_universe_repository import SqliteUniverseRepository
-    universe_repo = SqliteUniverseRepository(db_path="data/db/filings.sqlite")
+    from infrastructure.repositories.csv_universe_loader_repository import CsvUniverseLoaderRepository
+    universe_repo = CsvUniverseLoaderRepository(csv_path=csv_path)
 
     run(
         universe_repo=universe_repo,
-        max_age_days=args.max_age_days,
-        fetch_timeout_s=args.fetch_timeout,
-        limit=args.limit,
+        max_age_days=max_age_days,
+        fetch_timeout_s=fetch_timeout_s,
+        limit=limit,
         logger=logger,
-        verbose=args.verbose,
-        min_cache_interval_days=args.min_cache_interval_days,
-        force=args.force,
-        force_all=args.force_all,
+        verbose=verbose,
+        min_cache_interval_days=min_cache_interval_days,
+        force=force,
+        force_all=force_all,
         countries=countries,
         mics=mics,
+        shard=shard,
+        of=of,
+        project_root=project_root,
+    )
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--csv", required=True)
+    ap.add_argument("--max-age-days", type=int, default=120)
+    ap.add_argument("--min-cache-interval-days", type=int, default=7)
+    ap.add_argument("--fetch-timeout", type=int, default=25)
+    ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--country", action="append", default=[])
+    ap.add_argument("--mic", action="append", default=[])
+    ap.add_argument("--force", action="store_true")
+    ap.add_argument("--force-all", action="store_true")
+    ap.add_argument("--shard", type=int, default=1)
+    ap.add_argument("--of", type=int, default=1)
+    ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--log-dir", type=str, default="logs")
+    args = ap.parse_args()
+
+    run_cli(
+        universe_csv=args.csv,
+        max_age_days=args.max_age_days,
+        min_cache_interval_days=args.min_cache_interval_days,
+        fetch_timeout_s=args.fetch_timeout,
+        limit=args.limit,
+        country=args.country,
+        mic=args.mic,
+        force=args.force,
+        force_all=args.force_all,
         shard=args.shard,
         of=args.of,
+        verbose=args.verbose,
+        log_dir=args.log_dir,
     )
 
 
