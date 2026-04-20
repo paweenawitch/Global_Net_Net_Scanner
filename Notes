@@ -1,5 +1,0 @@
-To create new branches:
-
-git checkout main
-git pull
-git checkout -b feat/<your-task-branch>
