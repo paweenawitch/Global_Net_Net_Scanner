@@ -11,6 +11,7 @@ function App() {
   const [walterStats, setWalterStats] = useState({ incidents: [], recent_runs: [] })
   const [cliTasks, setCliTasks] = useState([])
   const [activeTasks, setActiveTasks] = useState([])
+  const [selectedMarket, setSelectedMarket] = useState('global_full.csv')
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -122,6 +123,8 @@ function App() {
             stats={walterStats} 
             cliTasks={cliTasks} 
             activeTasks={activeTasks}
+            selectedMarket={selectedMarket}
+            onMarketChange={setSelectedMarket}
             onTaskStarted={fetchActiveTasks}
           />
         )}
@@ -314,18 +317,45 @@ function ScreenerView({ data, loading, runDates, selectedDate, onDateChange }) {
   )
 }
 
-function WorkflowView({ stats, cliTasks, activeTasks, onTaskStarted }) {
+function WorkflowView({ stats, cliTasks, activeTasks, selectedMarket, onMarketChange, onTaskStarted }) {
   const [logs, setLogs] = useState([])
   const [streamingPid, setStreamingPid] = useState(null)
+
+  const markets = [
+    { label: 'GLOBAL', value: 'global_full.csv' },
+    { label: 'UNITED STATES', value: 'us_full.csv' },
+    { label: 'HONG KONG', value: 'hk_full.csv' },
+    { label: 'JAPAN', value: 'jp_full.csv' },
+    { label: 'THAILAND', value: 'th_full.csv' }
+  ]
   
   const runTask = async (mode, taskType = 'cycle', args = {}) => {
     const label = taskType === 'cycle' ? `WALTER_${mode.toUpperCase()}_CYCLE` : `CLI_${mode.toUpperCase()}`
     setLogs([`>>> STARTING ${label}`])
     
+    // Discover supported arguments from metadata
+    const taskMeta = cliTasks.find(t => t.name === mode)
+    const supportedArgs = taskMeta?.supported_args || []
+
     // Default args for certain tasks
     const finalArgs = { ...args }
-    if (taskType === 'direct' && (mode.includes('ncav') || mode.includes('prices'))) {
-      if (!finalArgs.csv) finalArgs.csv = 'data/tickers/global_full.csv'
+    if (taskType === 'direct') {
+      // Intelligent injector: only pass arguments that the script explicitly defines
+      if (supportedArgs.includes('csv')) {
+        if (!finalArgs.csv) finalArgs.csv = `data/tickers/${selectedMarket}`
+      } else if (supportedArgs.includes('tickers_csv')) {
+        if (!finalArgs.tickers_csv) finalArgs.tickers_csv = `data/tickers/${selectedMarket}`
+      } else if (supportedArgs.includes('shortlist')) {
+        // If the script targets a shortlist but we have a market selected, 
+        // we might still want to pass the universe file if the script is flexible, 
+        // but usually 'shortlist' expects a different format. 
+        // For now, we only inject if explicitly supported.
+        if (!finalArgs.shortlist && selectedMarket !== 'global_full.csv') {
+           // Mapping selected market to a potential regional shortlist is complex, 
+           // but we can pass the universe path as the 'shortlist' if the script allows it.
+           // finalArgs.shortlist = `data/tickers/${selectedMarket}`
+        }
+      }
     }
     if (taskType === 'cycle' && mode === 'weekly') {
       finalArgs.ncav_regional = true
@@ -370,7 +400,20 @@ function WorkflowView({ stats, cliTasks, activeTasks, onTaskStarted }) {
   return (
     <div className="flex flex-col gap-4" style={{ height: 'calc(100vh - 200px)' }}>
       <div className="flex justify-between items-center">
-        <h2 style={{ margin: 0 }}>WORKFLOW_CONTROL_CENTER</h2>
+        <div className="flex items-center gap-4">
+          <h2 style={{ margin: 0 }}>WORKFLOW_CONTROL_CENTER</h2>
+          <div className="flex items-center gap-2 ml-4 p-1 px-3 glass-panel" style={{ border: '1px solid #333' }}>
+            <label className="text-xs text-secondary text-mono">TARGET_MARKET:</label>
+            <select 
+              className="filter-select"
+              style={{ background: 'transparent', border: 'none', color: 'var(--accent-primary)', fontWeight: 'bold' }}
+              value={selectedMarket}
+              onChange={(e) => onMarketChange(e.target.value)}
+            >
+              {markets.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+            </select>
+          </div>
+        </div>
         <div className="flex gap-4">
           <button className="primary" onClick={() => runTask('daily')}>RUN_DAILY_CYCLE</button>
           <button className="primary" onClick={() => runTask('weekly')}>RUN_WEEKLY_CYCLE</button>
@@ -380,35 +423,78 @@ function WorkflowView({ stats, cliTasks, activeTasks, onTaskStarted }) {
       <div className="flex gap-4" style={{ flex: 1, minHeight: 0 }}>
         {/* Left Panel: Tasks Grid */}
         <div className="flex flex-col gap-4" style={{ flex: 1.5, overflowY: 'auto' }}>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {cliTasks.map(task => {
-              const active = activeTasks.find(t => t.mode === task.name && t.task_type === 'direct')
-              return (
-                <div key={task.name} className={`task-card ${active ? 'active' : ''}`}>
-                  <div className="flex justify-between items-start mb-2">
-                    <span className="task-name">{task.name}</span>
-                    {active ? (
-                      <span className="badge badge-run">RUNNING</span>
-                    ) : (
-                      <span className="badge badge-idle">IDLE</span>
-                    )}
+          {/* Core Pipeline Section */}
+          <div className="mb-4">
+            <h3 className="text-xs text-secondary text-mono mb-3 flex items-center gap-2">
+              <span style={{ color: 'var(--accent-primary)' }}>▶</span> CORE_PIPELINE
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {cliTasks.filter(t => t.group === 'CORE PIPELINE').map(task => {
+                const active = activeTasks.find(t => t.mode === task.name && t.task_type === 'direct')
+                return (
+                  <div key={task.name} className={`task-card ${active ? 'active' : ''}`} style={{ borderLeft: '3px solid var(--accent-primary)' }}>
+                    <div className="flex justify-between items-start mb-2">
+                      <span className="task-name" style={{ fontSize: '0.85rem' }}>{task.label}</span>
+                      {active ? (
+                        <span className="badge badge-run">RUNNING</span>
+                      ) : (
+                        <span className="badge badge-idle">IDLE</span>
+                      )}
+                    </div>
+                    <div className="text-xs text-secondary mb-4 opacity-70" style={{ lineHeight: '1.4' }}>
+                      {task.description.split(/(\[.*?\])/).map((part, i) => 
+                        part.startsWith('[') ? <b key={i} style={{ color: part.includes('Required') ? 'var(--danger)' : 'var(--accent-primary)' }}>{part}</b> : part
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      {!active ? (
+                        <button className="text-xs p-1 px-3" onClick={() => runTask(task.name, 'direct')}>RUN_TASK</button>
+                      ) : (
+                        <>
+                          <button className="text-xs p-1 px-3 secondary" onClick={() => attachToLogStream(active.pid, `CLI_${task.name.toUpperCase()}`)}>ATTACH</button>
+                          <button className="text-xs p-1 px-3 danger" onClick={() => killTask(active.pid)}>KILL</button>
+                        </>
+                      )}
+                    </div>
                   </div>
-                  <div className="text-xs text-secondary mb-4 opacity-70">
-                    {task.description}
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Utilities Section */}
+          <div className="opacity-80">
+            <h3 className="text-xs text-secondary text-mono mb-3">ADDITIONAL_UTILITIES</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {cliTasks.filter(t => t.group !== 'CORE PIPELINE').map(task => {
+                const active = activeTasks.find(t => t.mode === task.name && t.task_type === 'direct')
+                return (
+                  <div key={task.name} className={`task-card ${active ? 'active' : ''}`}>
+                    <div className="flex justify-between items-start mb-2">
+                      <span className="task-name">{task.name}</span>
+                      {active ? (
+                        <span className="badge badge-run">RUNNING</span>
+                      ) : (
+                        <span className="badge badge-idle">IDLE</span>
+                      )}
+                    </div>
+                    <div className="text-xs text-secondary mb-4 opacity-70">
+                      {task.description}
+                    </div>
+                    <div className="flex gap-2">
+                      {!active ? (
+                        <button className="text-xs p-1 px-3" onClick={() => runTask(task.name, 'direct')}>RUN_TASK</button>
+                      ) : (
+                        <>
+                          <button className="text-xs p-1 px-3 secondary" onClick={() => attachToLogStream(active.pid, `CLI_${task.name.toUpperCase()}`)}>ATTACH</button>
+                          <button className="text-xs p-1 px-3 danger" onClick={() => killTask(active.pid)}>KILL</button>
+                        </>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex gap-2">
-                    {!active ? (
-                      <button className="text-xs p-1 px-3" onClick={() => runTask(task.name, 'direct')}>RUN_TASK</button>
-                    ) : (
-                      <>
-                        <button className="text-xs p-1 px-3 secondary" onClick={() => attachToLogStream(active.pid, `CLI_${task.name.toUpperCase()}`)}>ATTACH</button>
-                        <button className="text-xs p-1 px-3 danger" onClick={() => killTask(active.pid)}>KILL</button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              )
-            })}
+                )
+              })}
+            </div>
           </div>
         </div>
 

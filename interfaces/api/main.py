@@ -10,6 +10,7 @@ import signal
 import asyncio
 from pathlib import Path
 from datetime import datetime, timezone
+import re
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,6 +48,52 @@ class ProcessInfo(BaseModel):
     task_type: str
     started_at: str
 
+# --- Pipeline Metadata ---
+TASK_METADATA = {
+    "build_universe": {
+        "order": 1,
+        "group": "CORE PIPELINE",
+        "label": "Step 1: Universe Building",
+        "description": "Initialize Ticker Universe. Generates regional or global ticker lists from exchange sources."
+    },
+    "update_ncav_cache": {
+        "order": 2,
+        "group": "CORE PIPELINE",
+        "label": "Step 2: Balance Sheet Sync",
+        "description": "Baseline Balance Sheet Sync. Fetches latest current assets/liabilities for initial shortlist filtering. [Recommended: Weekly Run]"
+    },
+    "update_prices_cache": {
+        "order": 3,
+        "group": "CORE PIPELINE",
+        "label": "Step 3: Price Sync",
+        "description": "Sync Market Prices. Synchronizes latest market closing prices from Yahoo Finance."
+    },
+    "update_fx_cache": {
+        "order": 4,
+        "group": "CORE PIPELINE",
+        "label": "Step 4: FX Sync",
+        "description": "Sync FX Rates. Updates real-time spot rates for global currency normalization."
+    },
+    "main_build_shortlist_cache_only": {
+        "order": 5,
+        "group": "CORE PIPELINE",
+        "label": "Step 5: Generate Shortlist",
+        "description": "High-Efficiency Filtering. Re-filters universe based on latest Data Sync. [Required after any Sync]"
+    },
+    "main_fetch_full_cache": {
+        "order": 6,
+        "group": "CORE PIPELINE",
+        "label": "Step 6: Deep-Dive Sync",
+        "description": "Fundamental Analysis. Analyzes cash flow, capital structure, and insider behavior. [Recommended: Weekly Run]"
+    },
+    "run_screening": {
+        "order": 7,
+        "group": "CORE PIPELINE",
+        "label": "Step 7: Screening Engine",
+        "description": "Final Engine Run. Compiles results and populates the High-Density Dashboard."
+    }
+}
+
 # --- State Management ---
 active_processes: Dict[int, subprocess.Popen] = {}
 process_metadata: Dict[int, Dict[str, Any]] = {}
@@ -56,6 +103,17 @@ def get_db_connection(db_path: Path):
     conn.execute("PRAGMA journal_mode=WAL;") # Enable WAL mode for concurrency
     conn.row_factory = sqlite3.Row
     return conn
+
+def discover_args(file_path: Path) -> List[str]:
+    """Scans a python file for argparse argument definitions."""
+    try:
+        content = file_path.read_text(encoding="utf-8")
+        # Find all --arg-name or --arg_name in add_argument calls, handling optional short flags and whitespace
+        matches = re.findall(r'\.add_argument\(\s*(?:["\'][^"\']+["\']\s*,\s*)*["\']--([^"\']+)["\']', content)
+        return sorted(list(set(matches)))
+    except Exception as e:
+        logger.error(f"Failed to scan args for {file_path}: {e}")
+        return []
 
 # --- Endpoints ---
 
@@ -165,12 +223,27 @@ def get_tasks():
     if cli_dir.exists():
         for f in cli_dir.glob("*.py"):
             if f.name == "__init__.py": continue
+            
+            meta = TASK_METADATA.get(f.stem, {
+                "order": 99,
+                "group": "ADDITIONAL UTILITIES",
+                "label": f.stem,
+                "description": f"CLI Script: {f.name}"
+            })
+            
+            supported = discover_args(f)
             tasks.append({
                 "name": f.stem,
                 "path": str(f.relative_to(ROOT_DIR)),
-                "description": f"CLI Script: {f.name}"
+                "label": meta["label"],
+                "description": meta["description"],
+                "group": meta["group"],
+                "order": meta["order"],
+                "supported_args": supported
             })
-    return tasks
+    
+    # Sort by group (Core first) then by order
+    return sorted(tasks, key=lambda x: (x["group"] != "CORE PIPELINE", x["order"]))
 
 @app.get("/workflow/active")
 def get_active_tasks():
