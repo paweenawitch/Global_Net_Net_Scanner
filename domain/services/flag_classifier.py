@@ -1,5 +1,9 @@
 #domain/services/flag_classifier.py
 from typing import Optional, Tuple, List
+
+RECENT_DILUTION_RED_FLAG_THRESHOLD = 0.05
+
+
 def classify_flags(
     price_to_ncavps: Optional[float],
     cr: Optional[float],
@@ -66,7 +70,7 @@ def classify_flags(
     # dilution recent
     # If shares_out jumped >5% in recent windows, flag
     for label, dil in [("QoQ", dil_qoq), ("HoH", dil_hoh), ("YoY", dil_yoy)]:
-        if dil is not None and dil > 0.05:
+        if dil is not None and dil > RECENT_DILUTION_RED_FLAG_THRESHOLD:
             red.append(f"Dilution {label} >5%")
 
     # worst 12m

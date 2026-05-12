@@ -51,6 +51,12 @@ Percentage change in `shares_out`. We track it strictly over 3 axes:
 ```text
 dilution = (shares_out_new - shares_out_old) / shares_out_old
 ```
+If any of `dilution_qoq`, `dilution_hoh`, or `dilution_yoy` is greater than 5%, the company receives a red flag:
+```text
+Dilution QoQ >5%
+Dilution HoH >5%
+Dilution YoY >5%
+```
 
 ### DilutionCAGR
 Compound Annual Growth Rate of issued shares over a multi-year window (e.g. 3 years). Identifies chronic, structured shareholder dilution traps.
@@ -73,4 +79,4 @@ FCF_Yield = (Operating_Cash_Flow - Capital_Expenditures) / Market_Cap
 ## Categorical Flags
 
 - **Green Flags**: Positive compliance rules (e.g., `price_to_ncavps <= 0.67`).
-- **Red Flags**: Defensive veto lines (e.g., severe recent dilution > 8%, poor current ratio compliance, staleness of filings).
+- **Red Flags**: Defensive veto lines (e.g., dilution QoQ/HoH/YoY > 5%, severe 12-month or 3-year issuance, poor current ratio compliance, staleness of filings).
