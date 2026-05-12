@@ -10,7 +10,7 @@ It is open-source by design. If this helps even one investor, researcher, or stu
 
 ## **The High-Density Dashboard**
 
-The system features a professional-grade financial terminal for monitoring global net-nets in real-time.
+The system includes a financial terminal for exploring global net-nets using last-close prices and filing-based fundamentals.
 
 ![Dashboard Preview](images/dashboard.png)
 
