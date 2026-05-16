@@ -7,7 +7,6 @@ from application.ports import FundamentalsRepository
 
 from domain.models.fundamentals import NcavRecord
 from infrastructure.persistence.sqlite_filing_store import SqliteFilingStore
-from infrastructure.sources.hkex_news_source import HKEXNewsSource
 from infrastructure.sources.yahoo_source import YahooSource
 
 _log = logging.getLogger("shortlist.fundamentals")
@@ -16,7 +15,6 @@ class NcavCacheRepository(FundamentalsRepository):
     def __init__(self, db_path: str = "data/db/filings.sqlite") -> None:
         self._store = SqliteFilingStore(db_path)
         self._source = YahooSource()
-        self._hkex = HKEXNewsSource(filings_root=Path(db_path).resolve().parents[1] / "filings" / "hkex")
 
     def get_or_update(self, house_ticker: str, fetch_timeout: int) -> Dict[str, Any]:
         _log.debug("fetching fundamentals (update) for %s", house_ticker)
@@ -26,11 +24,7 @@ class NcavCacheRepository(FundamentalsRepository):
         
         # 2. Fetch fresh
         try:
-            # Use HKEX for Hong Kong tickers; Yahoo remains the fallback for everything else.
-            if house_ticker.upper().endswith(".HK"):
-                fresh = self._hkex.fetch_ncav_record(house_ticker)
-            else:
-                fresh = self._source.fetch_ncav_record(house_ticker)
+            fresh = self._source.fetch_ncav_record(house_ticker)
             
             # 3. Check if statement has changed (sig comparison)
             if cached and cached.statement_sig == fresh.statement_sig:

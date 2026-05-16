@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from infrastructure.sources.hkex_news_source import HKEXNewsSource
 from infrastructure.sources.us_sec_source import USSecSource
 from infrastructure.sources.yahoo_source import YahooSource
 
@@ -25,16 +24,11 @@ class FetchFundamentalsService:
         self.root = Path(project_root)
         self.core_dir = self.root / "cache" / "sec_core"
         self.ins_dir = self.root / "cache" / "sec_insider"
-        self.hkex_dir = self.root / "cache" / "hkex_news"
-        self.hkex_filings_dir = self.root / "data" / "filings" / "hkex"
         self.core_dir.mkdir(parents=True, exist_ok=True)
         self.ins_dir.mkdir(parents=True, exist_ok=True)
-        self.hkex_dir.mkdir(parents=True, exist_ok=True)
-        self.hkex_filings_dir.mkdir(parents=True, exist_ok=True)
 
         self.us_source = USSecSource(self.root)
         self.yahoo_source = YahooSource()
-        self.hkex_source = HKEXNewsSource(filings_root=self.root / "data" / "filings" / "hkex")
 
     def run_all(
         self,
@@ -103,10 +97,10 @@ class FetchFundamentalsService:
                 core_obj = self.us_source.fetch_core(ticker)
                 ins_obj = self.us_source.fetch_insiders(ticker)
             elif ticker.upper().endswith(".HK"):
-                # Hong Kong: Yahoo fundamentals + direct HKEX announcement cache
+                # Hong Kong: Yahoo fundamentals, same as the other non-US markets.
                 core_obj = self.yahoo_source.fetch_full_filings(ticker)
                 ins_obj = self.yahoo_source.fetch_insiders(ticker) # Currently a stub
-                self.hkex_source.fetch_ncav_record(ticker)
+                self.yahoo_source.fetch_ncav_record(ticker)
             else:
                 # Non-US Source (Yahoo)
                 core_obj = self.yahoo_source.fetch_full_filings(ticker)

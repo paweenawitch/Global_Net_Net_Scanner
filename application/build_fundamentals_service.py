@@ -6,7 +6,6 @@ from typing import List, Dict, Any, Optional
 
 from domain.models.fundamentals import NcavRecord
 from infrastructure.persistence.sqlite_filing_store import SqliteFilingStore
-from infrastructure.sources.hkex_news_source import HKEXNewsSource
 from infrastructure.sources.yahoo_source import YahooSource
 from infrastructure.sources.us_sec_source import USSecSource
 
@@ -18,7 +17,6 @@ class BuildFundamentalsService:
         self._store = SqliteFilingStore(str(self.root / db_path))
         self._yahoo = YahooSource()
         self._sec = USSecSource(self.root)
-        self._hkex = HKEXNewsSource(filings_root=self.root / "data" / "filings" / "hkex")
 
     def update_ncav_cache(self, tickers: List[str], force: bool = False) -> None:
         """Update NcavRecords (Step 2 fundamentals) for a list of tickers."""
@@ -30,12 +28,9 @@ class BuildFundamentalsService:
                     # check staleness if needed, but for now we follow the 'force' flag
                     LOGGER.debug(f"Skipping {ticker}, already cached.")
                     continue
-                
+
                 # Fetch fresh from the best available source.
-                if ticker.upper().endswith(".HK"):
-                    fresh = self._hkex.fetch_ncav_record(ticker)
-                else:
-                    fresh = self._yahoo.fetch_ncav_record(ticker)
+                fresh = self._yahoo.fetch_ncav_record(ticker)
                 self._store.upsert_ncav_record(fresh)
                 LOGGER.info(f"Updated NCAV record for {ticker}")
             except Exception as e:
