@@ -26,6 +26,11 @@ class CoreRepository(Protocol):
         ...
 
 
+class NcavRepository(Protocol):
+    def get_cached(self, house_ticker: str) -> Optional[Dict[str, Any]]:
+        ...
+
+
 class InsiderRepository(Protocol):
     def load_insiders(self, ticker: str) -> Optional[Dict[str, Any]]:
         ...
@@ -55,6 +60,7 @@ class ScreeningService:
         fx_provider: FxProvider,
         writer: ValuationWriter,
         screening_repo: Optional[ScreeningResultRepository] = None,
+        ncav_repo: Optional[NcavRepository] = None,
     ) -> None:
         self._shortlist_repo = shortlist_repo
         self._core_repo = core_repo
@@ -62,6 +68,7 @@ class ScreeningService:
         self._fx_provider = fx_provider
         self._writer = writer
         self._screening_repo = screening_repo
+        self._ncav_repo = ncav_repo
 
     def screen_shortlist(self, shortlist_path: Path, run_date: Optional[str] = None) -> ScreeningSummary:
         from datetime import datetime
@@ -78,12 +85,17 @@ class ScreeningService:
             if not core:
                 continue
 
+            ncav_rec = None
+            if self._ncav_repo:
+                ncav_rec = self._ncav_repo.get_cached(item.ticker)
+
             insider_blob = self._insider_repo.load_insiders(item.ticker) or {}
             valuation = analyze_one_ticker(
                 core=core,
                 insider_blob=insider_blob,
                 last_price=item.last_price,
                 fx_rates=fx_rates,
+                ncav_rec=ncav_rec,
             )
             results.append(valuation)
 

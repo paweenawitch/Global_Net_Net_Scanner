@@ -10,6 +10,7 @@ from infrastructure.repositories.sqlite_shortlist_repository import SqliteShortl
 from infrastructure.repositories.sec_core_fs_repository import SecCoreFsRepository
 from infrastructure.repositories.sqlite_insider_repository import SqliteInsiderRepository
 from infrastructure.repositories.sqlite_screening_repository import SqliteScreeningRepository
+from infrastructure.repositories.ncav_cache_repository import NcavCacheRepository
 from infrastructure.sources.yahoo_source import YahooSource # For FX if needed
 from infrastructure.sources.yahoo_fx_provider import YahooFxProvider
 from infrastructure.reporting.valuation_report_writer import CsvJsonValuationWriter
@@ -48,6 +49,7 @@ def main() -> None:
     
     writer = CsvJsonValuationWriter(public_dir=public_dir, internal_dir=internal_dir)
     screening_repo = SqliteScreeningRepository(db_path=db_path)
+    ncav_repo = NcavCacheRepository(db_path=db_path)
 
     # Application service
     service = ScreeningService(
@@ -57,6 +59,7 @@ def main() -> None:
         fx_provider=fx_provider,
         writer=writer,
         screening_repo=screening_repo,
+        ncav_repo=ncav_repo,
     )
 
     logging.info("Starting screening run from SQLite DB...")

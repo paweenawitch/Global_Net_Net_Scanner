@@ -56,13 +56,48 @@ def _extract_shares_out(period):
     return None
 
 
-def analyze_one_ticker(core, insider_blob, last_price, fx_rates) -> ValuationResult:
+from typing import Optional, Dict, Any
+
+def analyze_one_ticker(core, insider_blob, last_price, fx_rates, ncav_rec: Optional[Dict[str, Any]] = None) -> ValuationResult:
     periods = all_periods_sorted(core)
+    
+    # Inject fresh NCAV data as a new period if it's newer
+    if ncav_rec and ncav_rec.get("fs_date"):
+        from domain.services.periods import parse_date
+        ncav_date = parse_date(ncav_rec.get("fs_date"))
+        
+        latest_date = None
+        if periods:
+            latest_date = parse_date(periods[0].get("statement_date") or periods[0].get("date"))
+            
+        if not periods or (ncav_date and latest_date and (ncav_date - latest_date).days > 45):
+            syn = {
+                "date": ncav_rec.get("fs_date"),
+                "currency": ncav_rec.get("currency"),
+                "balance": {
+                    "assets_current": ncav_rec.get("assets_current"),
+                    "liab_total": ncav_rec.get("liab_total"),
+                    "shares_out": ncav_rec.get("shares_out")
+                }
+            }
+            periods.insert(0, syn)
+        elif periods and ncav_date and latest_date and abs((ncav_date - latest_date).days) <= 45:
+            if ncav_rec.get("shares_out"):
+                if "balance" not in periods[0]:
+                    periods[0]["balance"] = {}
+                periods[0]["balance"]["shares_out"] = ncav_rec.get("shares_out")
+
     latest = periods[0] if periods else None
 
     # --- core balance sheet / NCAV ---
-    cr = current_ratio(latest)          # safely returns None if latest is None
+    cr = current_ratio(latest)
+    if cr is None and len(periods) > 1:
+        cr = current_ratio(periods[1])
+        
     de = de_ratio(latest)
+    if de is None and len(periods) > 1:
+        de = de_ratio(periods[1])
+        
     ncav_native = ncav_total_native(latest)
 
     shares = _extract_shares_out(latest)

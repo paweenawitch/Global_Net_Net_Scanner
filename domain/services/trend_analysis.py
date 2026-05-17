@@ -66,18 +66,25 @@ def _shares_out(period: Dict[str, Any]) -> Optional[float]:
     """
     if period is None:
         return None
-    # common places
-    for k in ["shares_out", "shares_outstanding", "basic_shares_out"]:
-        v = period.get(k)
-        if v is not None:
-            return safe_float(v)
 
-    # sometimes inside "meta" of the period
-    meta = period.get("meta") or {}
-    for k in ["shares_out", "shares_outstanding", "basic_shares_out"]:
-        v = meta.get(k)
-        if v is not None:
-            return safe_float(v)
+    containers = [period]
+    bal = period.get("balance")
+    if isinstance(bal, dict):
+        containers.append(bal)
+    meta = period.get("meta")
+    if isinstance(meta, dict):
+        containers.append(meta)
+
+    for container in containers:
+        for k in ["shares_out", "shares_outstanding", "basic_shares_out"]:
+            raw = container.get(k)
+            if raw is None:
+                continue
+            if isinstance(raw, dict) and "val" in raw:
+                raw = raw.get("val")
+            val = safe_float(raw)
+            if val is not None:
+                return val
 
     return None
 

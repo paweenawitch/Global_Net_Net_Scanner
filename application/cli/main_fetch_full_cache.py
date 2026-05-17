@@ -1,14 +1,14 @@
 # application/cli/main_fetch_full_cache.py
 
 import argparse
-import pandas as pd
 import logging
 from pathlib import Path
 from application.services.fetch_fundamentals_service import FetchFundamentalsService
+from infrastructure.repositories.sqlite_shortlist_repository import SqliteShortlistRepository
 
 def run_cli(
     *,
-    shortlist: str = "data/tickers/ncav_shortlist.csv",
+    shortlist: str = "data/db/filings.sqlite",
     skip_days: int = 7,
     force: bool = False,
     us_only: bool = False,
@@ -21,17 +21,16 @@ def run_cli(
 ) -> None:
     # 1. Paths
     root = Path(__file__).resolve().parents[2]
-    shortlist_path = root / shortlist
+    db_path = root / shortlist
     
-    if not shortlist_path.exists():
-        raise SystemExit(f"Shortlist not found: {shortlist_path}")
+    if not db_path.exists():
+        raise SystemExit(f"Database not found: {db_path}")
 
     # 2. Load Tickers
-    df = pd.read_csv(shortlist_path)
-    if "ticker" not in df.columns:
-        raise SystemExit("Shortlist CSV must have a 'ticker' column.")
+    repo = SqliteShortlistRepository(db_path=str(db_path))
+    items = repo.load_shortlist()
     
-    tickers = [str(t).strip().upper() for t in df["ticker"] if t]
+    tickers = [str(item.ticker).strip().upper() for item in items if item.ticker]
     
     # 3. Apply Filters
     if us_only:
@@ -67,7 +66,7 @@ def run_cli(
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--shortlist", default="data/tickers/ncav_shortlist.csv")
+    ap.add_argument("--shortlist", default="data/db/filings.sqlite")
     ap.add_argument("--skip-days", type=int, default=7)
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--us-only", action="store_true")

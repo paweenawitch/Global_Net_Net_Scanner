@@ -256,7 +256,11 @@ class YahooSource:
         ncav = (ca - tl) if (ca is not None and tl is not None) else None
         
         period_shares = comp.get("shares_out")
-        ncav_ps = (ncav / period_shares) if (ncav is not None and period_shares and period_shares > 0) else None
+        
+        # Always prioritize live current shares for NCAV calculation if available
+        final_shares = info_shares if (info_shares and info_shares > 0) else period_shares
+        
+        ncav_ps = (ncav / final_shares) if (ncav is not None and final_shares and final_shares > 0) else None
         
         data_age_days = None
         if sel_date:
@@ -265,7 +269,7 @@ class YahooSource:
             except Exception: pass
             
         import hashlib
-        sig_input = f"{sel_date}|{ccy}|{ca}|{tl}|{period_shares}"
+        sig_input = f"{sel_date}|{ccy}|{ca}|{tl}|{final_shares}"
         sig = hashlib.sha256(sig_input.encode()).hexdigest()[:16]
         
         return NcavRecord(
@@ -276,7 +280,7 @@ class YahooSource:
             assets_current=ca,
             liab_total=tl,
             ncav=ncav,
-            shares_out=period_shares,
+            shares_out=final_shares,
             ncav_ps=ncav_ps,
             source="yahoo",
             cached_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -320,15 +324,38 @@ class YahooSource:
                 if pts:
                     pts.sort(key=lambda x: x[0])
                     s = pd.Series([v for _, v in pts], index=pd.DatetimeIndex([d for d, _ in pts]))
-                    return s[~s.index.duplicated(keep="last")]
+                    s = s[~s.index.duplicated(keep="last")]
         except Exception: pass
 
-        try:
-            _INFO_BUCKET.wait()
-            s = yahoo_retry(lambda: T.get_shares_full())
-            if s is not None and not s.empty: return s
-        except Exception: pass
-        return None
+        is_from_full = False
+        if s is None or s.empty:
+            try:
+                _INFO_BUCKET.wait()
+                s_full = yahoo_retry(lambda: T.get_shares_full())
+                if s_full is not None and not s_full.empty:
+                    s = s_full
+                    is_from_full = True
+            except Exception: pass
+            
+        if s is not None and not s.empty and is_from_full:
+            try:
+                _INFO_BUCKET.wait()
+                splits = yahoo_retry(lambda: T.splits)
+                if splits is not None and not splits.empty:
+                    if s.index.tz is not None:
+                        s.index = s.index.tz_localize(None)
+                        
+                    if splits.index.tz is not None:
+                        splits.index = splits.index.tz_localize(None)
+                        
+                    multiplier = pd.Series(1.0, index=s.index)
+                    for split_dt, ratio in splits.items():
+                        multiplier[multiplier.index < split_dt] *= float(ratio)
+                    s = s * multiplier
+            except Exception as e:
+                LOGGER.warning(f"Failed to apply splits: {e}")
+                
+        return s
 
     def _map_shares_to_periods(self, periods: List[Dict[str, Any]], series: Optional[pd.Series], info_shares: Optional[float]):
         latest_shares = info_shares
